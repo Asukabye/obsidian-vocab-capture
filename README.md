@@ -60,6 +60,14 @@ styles.css
 
 > Release 中的 zip 已包含运行所需的全部文件。
 
+### 方式三：BRAT
+
+已安装 [BRAT](https://github.com/TfTHacker/obsidian42-brat) 的话，可直接添加：
+
+```text
+Asukabye/obsidian-cet4-vocab-capture
+```
+
 ---
 
 ## 使用
