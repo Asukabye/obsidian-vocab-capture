@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Toggle add/remove - CET4 Vocab Capture</title>
+<link rel="stylesheet" href="../../styles.css">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #f4f4f2;
+    color: #202124;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  .wrap { width: 1180px; margin: 30px auto; }
+  .head { display: flex; align-items: baseline; gap: 14px; margin: 0 2px 18px; }
+  .head h1 { font-size: 22px; margin: 0; letter-spacing: -.02em; }
+  .head span { color: #777770; font-size: 13px; }
+  .flow { display: grid; grid-template-columns: 1fr 54px 1fr 54px 1fr; align-items: stretch; }
+  .card {
+    background: #fff;
+    border: 1px solid #deded8;
+    border-radius: 12px;
+    padding: 18px 18px 14px;
+    box-shadow: 0 8px 22px rgba(0,0,0,.05);
+    min-height: 310px;
+  }
+  .step { color: #8a8a82; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+  .title { font-size: 15px; font-weight: 700; margin: 6px 0 14px; }
+  .sentence { font: 14px/1.9 Georgia, "Times New Roman", serif; color: #2c2c29; }
+  .hl {
+    background: rgba(64,190,160,.28);
+    border-radius: 2px;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+  }
+  .key {
+    display: inline-block;
+    background: #222220;
+    color: #fff;
+    border-radius: 6px;
+    padding: 3px 8px;
+    font: 600 12px "Cascadia Code", Consolas, monospace;
+    margin: 0 2px;
+  }
+  .state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 16px;
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .state.add { background: #eefaf6; color: #157a63; border: 1px solid #d8efe8; }
+  .state.remove { background: #fff2ed; color: #9a4a2f; border: 1px solid #f1ddd4; }
+  .state.idle { background: #f2f2ee; color: #66665f; border: 1px solid #e4e4de; }
+  .file {
+    margin-top: 14px;
+    border: 1px solid #e4e4de;
+    border-radius: 8px;
+    background: #fbfbf9;
+    padding: 9px 11px;
+    font: 12px/1.8 "Cascadia Code", Consolas, monospace;
+    color: #55554f;
+    min-height: 74px;
+  }
+  .file .label { color: #999990; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 2px; }
+  .file .line { padding: 1px 4px; border-radius: 3px; }
+  .file .line.on { background: #e4f7f1; color: #116a57; }
+  .arrow { display: flex; align-items: center; justify-content: center; color: #b6b6ae; font-size: 26px; }
+  .footer {
+    margin-top: 18px;
+    color: #7d7d75;
+    font-size: 12px;
+    text-align: center;
+  }
+  .footer b { color: #4e4e48; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <h1>同一个快捷键，添加与移除</h1>
+      <span>toggle 依据：该词是否在词集中</span>
+    </div>
+    <div class="flow">
+      <div class="card">
+        <div class="step">Step 01</div>
+        <div class="title">选中未收录的词</div>
+        <div class="sentence">It's well known that physical <b>beneficial</b> exercise supports mental health.</div>
+        <div><span class="key">Alt+W</span></div>
+        <div class="state idle">○ 未收录</div>
+        <div class="file">
+          <div class="label">生词本.txt</div>
+          <div class="line">exercise</div>
+        </div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="card">
+        <div class="step">Step 02</div>
+        <div class="title">收录并全库高亮</div>
+        <div class="sentence">It's well known that physical <span class="hl">beneficial</span> exercise supports mental health.</div>
+        <div><span class="key">Alt+W</span></div>
+        <div class="state add">✓ 已收录</div>
+        <div class="file">
+          <div class="label">生词本.txt</div>
+          <div class="line">exercise</div>
+          <div class="line on">beneficial</div>
+        </div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="card">
+        <div class="step">Step 03</div>
+        <div class="title">再次按键移除</div>
+        <div class="sentence">It's well known that physical <b>beneficial</b> exercise supports mental health.</div>
+        <div><span class="key">Alt+W</span></div>
+        <div class="state remove">− 已移除</div>
+        <div class="file">
+          <div class="label">生词本.txt</div>
+          <div class="line">exercise</div>
+        </div>
+      </div>
+    </div>
+    <div class="footer">
+      阅读视图与编辑视图共用同一逻辑；也可以直接编辑 <b>生词本.txt</b> 增删单词，插件会自动重新加载。
+    </div>
+  </div>
+</body>
+</html>

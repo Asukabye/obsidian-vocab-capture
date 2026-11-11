@@ -1,0 +1,18 @@
+/* CET4 生词捕获：只作用于 CSS Custom Highlight 图层，不修改 DOM、不修改 md。 */
+::highlight(cet4-vocab-capture) {
+  background-color: var(--cet4-vocab-bg, rgba(64, 190, 160, 0.28));
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+/* 编辑视图（Live Preview / Source）通过 CM6 Decoration 添加的类。 */
+.cet4-vocab-editor-highlight {
+  background-color: var(--cet4-vocab-bg, rgba(64, 190, 160, 0.28));
+  color: inherit;
+  border-radius: 2px;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
