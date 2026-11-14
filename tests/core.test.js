@@ -38,6 +38,8 @@ const {
   buildEditorDecorations,
   overlapsRanges,
   isEditableTarget,
+  getHighlightName,
+  buildHighlightCss,
   WordStore,
 } = PluginClass.__test;
 
@@ -214,6 +216,15 @@ test("按键: CM6 编辑器不当作普通输入框，设置输入框仍然跳�
     true,
   );
   assert.equal(isEditableTarget(null), false);
+});
+
+test("高亮名称: 动态 CSS 与注册名保持一致", () => {
+  const name = getHighlightName();
+  assert.match(name, /^[A-Za-z_][A-Za-z0-9_-]*$/);
+  const css = buildHighlightCss(name);
+  assert.ok(css.includes(`::highlight(${name})`));
+  assert.ok(css.includes("--cet4-vocab-bg"));
+  assert.ok(buildHighlightCss("vocab-capture").includes("::highlight(vocab-capture)"));
 });
 
 test("WordStore: 去重、排序、写入，以及切换路径前先加载", async () => {

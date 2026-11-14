@@ -11,6 +11,7 @@ const {
 
 const PLUGIN_ID = "cet4-vocab-capture";
 const HIGHLIGHT_NAME = "cet4-vocab-capture";
+const HIGHLIGHT_STYLE_ID = "cet4-vocab-highlight-style";
 
 const DEFAULT_SETTINGS = {
   wordFilePath: "生词本.txt",
@@ -245,6 +246,23 @@ function isEditableTarget(target) {
     return false;
   }
   return true;
+}
+
+function getHighlightName() {
+  const name = String(HIGHLIGHT_NAME || "").trim();
+  return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)
+    ? name
+    : "vocab-highlight";
+}
+
+function buildHighlightCss(name) {
+  return `::highlight(${name}) {
+  background-color: var(--cet4-vocab-bg, rgba(64, 190, 160, 0.28));
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}`;
 }
 
 function getPreviewElement(view) {
@@ -721,6 +739,7 @@ class Cet4VocabPlugin extends Plugin {
     }
 
     this.applyHighlightColor();
+    this.injectHighlightStyle();
 
     this.registerEditorHighlighting();
 
@@ -921,6 +940,7 @@ class Cet4VocabPlugin extends Plugin {
 
     if (this.editorViews) this.editorViews.clear();
 
+    this.removeHighlightStyle();
     this.clearHighlights();
 
     if (typeof document !== "undefined" && document.body) {
@@ -979,6 +999,23 @@ class Cet4VocabPlugin extends Plugin {
     } else {
       document.body.style.removeProperty("--cet4-vocab-bg");
     }
+  }
+
+  injectHighlightStyle() {
+    if (typeof document === "undefined") return;
+    this.removeHighlightStyle();
+    const style = document.createElement("style");
+    style.id = HIGHLIGHT_STYLE_ID;
+    style.textContent = buildHighlightCss(getHighlightName());
+    (document.head || document.body).appendChild(style);
+    this.highlightStyleEl = style;
+  }
+
+  removeHighlightStyle() {
+    this.highlightStyleEl = null;
+    if (typeof document === "undefined") return;
+    const existing = document.getElementById(HIGHLIGHT_STYLE_ID);
+    if (existing) existing.remove();
   }
 
   handleKeyDown(event) {
@@ -1348,7 +1385,7 @@ class Cet4VocabPlugin extends Plugin {
     for (const range of ranges) {
       highlight.add(range);
     }
-    window.CSS.highlights.set(HIGHLIGHT_NAME, highlight);
+    window.CSS.highlights.set(getHighlightName(), highlight);
     this.currentHighlight = highlight;
   }
 
@@ -1362,7 +1399,7 @@ class Cet4VocabPlugin extends Plugin {
       return;
     }
     try {
-      window.CSS.highlights.delete(HIGHLIGHT_NAME);
+      window.CSS.highlights.delete(getHighlightName());
     } catch (error) {
       // 注册表被宿主清理时忽略。
     }
@@ -1626,5 +1663,7 @@ module.exports.__test = {
   buildEditorDecorations,
   overlapsRanges,
   isEditableTarget,
+  getHighlightName,
+  buildHighlightCss,
   WordStore,
 };

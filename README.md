@@ -36,7 +36,7 @@ Obsidian 插件：把选中的英文单词收录到 **vault 级词集**，并在
 
 ### 方式一：Release 安装包
 
-1. 从 [Releases](../../releases) 下载 `cet4-vocab-capture-0.2.0.zip`（仓库内 [`dist/cet4-vocab-capture-0.2.0.zip`](dist/cet4-vocab-capture-0.2.0.zip) 也可直接下载）。
+1. 从 [Releases](../../releases) 下载 `cet4-vocab-capture-0.2.1.zip`（仓库内 [`dist/cet4-vocab-capture-0.2.1.zip`](dist/cet4-vocab-capture-0.2.1.zip) 也可直接下载）。
 2. 解压到：
 
 ```text
@@ -157,15 +157,16 @@ dist/           可直接安装的 zip
 - **编辑视图**：`registerEditorExtension` + `ViewPlugin` + `RangeSetBuilder` + `Decoration.mark`；只处理 `visibleRanges`，词表变化时通过 `StateEffect` 触发重建。
 - **直接编辑词表**：`vault` 的 `modify` / `create` / `delete` / `rename` 事件触发重载并刷新。
 - **不修改 md**：所有高亮都是运行时渲染效果。
+- **改名安全**：阅读视图的 `::highlight()` 样式由 `HIGHLIGHT_NAME` 动态注入，修改插件 ID/名称后不会出现注册名与 CSS 选择器不一致（0.2.1 修复）。
 
 ---
 
 ## 验证
 
 - `node --check main.js`
-- 纯函数测试：19 项
+- 纯函数测试：20 项
 - jsdom DOM 测试：8 项
-- 插件集成测试：4 项
+- 插件集成测试：5 项
 - Chromium 150 阅读视图高亮测试：13 项
 
 CM6 扩展使用 Obsidian 运行时提供的 `@codemirror/view` / `@codemirror/state`，与 Obsidian 使用同一份 CodeMirror 实例，不重复打包。项目未包含自动化 Obsidian UI 测试；升级 Obsidian 或更换主题后，建议先在目标 vault 做一次手工验收。

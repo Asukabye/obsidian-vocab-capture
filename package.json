@@ -1,6 +1,6 @@
 {
   "name": "obsidian-cet4-vocab-capture",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Obsidian plugin: toggle words in a vault-wide vocabulary set and highlight them in reading and editing views.",
   "scripts": {

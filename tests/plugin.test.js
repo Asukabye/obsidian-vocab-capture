@@ -38,7 +38,7 @@ Module._load = function (request, parent, isMain) {
 const PluginClass = require("../main.js");
 Module._load = originalLoad;
 
-const { WordStore } = PluginClass.__test;
+const { WordStore, getHighlightName } = PluginClass.__test;
 const HIGHLIGHT_NAME = "cet4-vocab-capture";
 
 function setup() {
@@ -154,4 +154,22 @@ test("插件: toggleWord 同一入口完成添加与移除", async () => {
   await plugin.toggleWord("beneficial");
   assert.equal(plugin.store.words.has("beneficial"), false);
   assert.equal(files.get("a.txt"), "");
+});
+
+test("插件: 动态注入 ::highlight 样式，名称与注册名一致", () => {
+  const dom = new JSDOM("<!doctype html><html><head></head><body></body></html>");
+  global.window = dom.window;
+  global.document = dom.window.document;
+
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.injectHighlightStyle();
+
+  const style = document.getElementById("cet4-vocab-highlight-style");
+  assert.ok(style);
+  assert.ok(
+    style.textContent.includes(`::highlight(${getHighlightName()})`),
+  );
+
+  plugin.removeHighlightStyle();
+  assert.equal(document.getElementById("cet4-vocab-highlight-style"), null);
 });
