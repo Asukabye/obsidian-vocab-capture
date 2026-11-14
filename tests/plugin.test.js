@@ -175,3 +175,34 @@ test("插件: 动态注入 ::highlight 样式，名称与注册名一致", () =>
   plugin.removeHighlightStyle();
   assert.equal(document.getElementById("cet4-vocab-highlight-style"), null);
 });
+
+test("插件: appendUnknown 写入独立文件并去重", async () => {
+  const files = new Map();
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = { unknownFilePath: "unknown.txt" };
+  plugin.readTextFile = async (path) => files.get(path) || "";
+  plugin.writeTextFile = async (path, text) => {
+    files.set(path, text);
+  };
+
+  const first = await plugin.appendUnknown("hello\nworld");
+  assert.equal(first.added, true);
+  assert.equal(files.get("unknown.txt"), "hello world\n");
+
+  const duplicate = await plugin.appendUnknown("hello world");
+  assert.equal(duplicate.added, false);
+  assert.equal(duplicate.count, 1);
+});
+
+test("插件: 旧设置加载后补齐不理解词默认值", async () => {
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.loadData = async () => ({
+    wordFilePath: "words.txt",
+    hotkey: { modifiers: ["Alt"], key: "W" },
+  });
+  await plugin.loadSettings();
+
+  assert.equal(plugin.settings.unknownFilePath, "不理解的词.txt");
+  assert.equal(plugin.settings.unknownHotkey.key, "Q");
+  assert.deepEqual(plugin.settings.unknownHotkey.modifiers, ["Alt"]);
+});

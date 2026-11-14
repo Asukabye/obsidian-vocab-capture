@@ -24,6 +24,9 @@ Module._load = originalLoad;
 const {
   normalizeEntry,
   classifyEntry,
+  normalizeUnknownSelection,
+  countUnknownLines,
+  appendUnknownRecord,
   parseWordSet,
   serializeWordSet,
   buildWordPatternSource,
@@ -94,6 +97,29 @@ test("classifyEntry: 纯汉字为中文，其余为英文词条", () => {
   assert.equal(classifyEntry("经济"), "zh");
   assert.equal(classifyEntry("beneficial"), "en");
   assert.equal(classifyEntry("give up"), "en");
+});
+
+test("不理解词: 不校验格式，只折叠空白到一行", () => {
+  assert.equal(normalizeUnknownSelection("  foo\n bar\t baz  "), "foo bar baz");
+  assert.equal(normalizeUnknownSelection("你好，世界！"), "你好，世界！");
+  assert.equal(normalizeUnknownSelection("AI 技术 / 2026"), "AI 技术 / 2026");
+  assert.equal(normalizeUnknownSelection(" \n\t "), "");
+});
+
+test("不理解词: 追加记录、保留原有内容、精确去重", () => {
+  assert.deepEqual(appendUnknownRecord("", "hello"), {
+    text: "hello\n",
+    added: true,
+  });
+  assert.deepEqual(appendUnknownRecord("a", "b"), {
+    text: "a\nb\n",
+    added: true,
+  });
+  assert.deepEqual(appendUnknownRecord("a\nb\n", "b"), {
+    text: "a\nb\n",
+    added: false,
+  });
+  assert.equal(countUnknownLines("a\n\nb\n"), 2);
 });
 
 test("parseWordSet: 中英混合词表、BOM、CRLF、去重、忽略非法行", () => {

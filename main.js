@@ -16,6 +16,8 @@ const HIGHLIGHT_STYLE_ID = "cet4-vocab-highlight-style";
 const DEFAULT_SETTINGS = {
   wordFilePath: "生词本.txt",
   hotkey: { modifiers: ["Alt"], key: "W" },
+  unknownFilePath: "不理解的词.txt",
+  unknownHotkey: { modifiers: ["Alt"], key: "Q" },
   highlightColor: "rgba(64, 190, 160, 0.28)",
   includeTables: true,
   includeCode: false,
@@ -117,6 +119,43 @@ function normalizeEntry(raw) {
 
 function classifyEntry(entry) {
   return /^\p{Script=Han}+$/u.test(String(entry || "")) ? "zh" : "en";
+}
+
+function normalizeUnknownSelection(raw) {
+  if (typeof raw !== "string") return "";
+  return raw
+    .replace(/\r\n?|\n/g, " ")
+    .replace(/\u00a0/g, " ")
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function countUnknownLines(text) {
+  return String(text == null ? "" : text)
+    .split(/\r?\n/)
+    .filter((line) => line.trim())
+    .length;
+}
+
+function appendUnknownRecord(existing, entry) {
+  const current = String(existing == null ? "" : existing);
+  const normalized = normalizeUnknownSelection(entry);
+  if (!normalized) return { text: current, added: false };
+
+  const lines = current
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.includes(normalized)) {
+    return { text: current, added: false };
+  }
+
+  const separator = current && !current.endsWith("\n") ? "\n" : "";
+  return {
+    text: `${current}${separator}${normalized}\n`,
+    added: true,
+  };
 }
 
 function parseWordSet(text) {
@@ -874,6 +913,28 @@ class Cet4VocabPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "record-unknown-selection",
+      name: "记录不理解的词/内容",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        const mode = view ? view.getMode() : null;
+        const available = mode === "preview" || mode === "source";
+        if (!checking && available) {
+          this.captureUnknownFromView(view, true);
+        }
+        return available;
+      },
+    });
+
+    this.addCommand({
+      id: "open-unknown-list",
+      name: "打开不理解词文件",
+      callback: () => {
+        void this.openUnknownFile();
+      },
+    });
+
+    this.addCommand({
       id: "open-word-list",
       name: "打开生词本",
       callback: () => {
@@ -1071,6 +1132,9 @@ class Cet4VocabPlugin extends Plugin {
     this.settings.wordFilePath =
       String(this.settings.wordFilePath || "").trim() ||
       DEFAULT_SETTINGS.wordFilePath;
+    this.settings.unknownFilePath =
+      String(this.settings.unknownFilePath || "").trim() ||
+      DEFAULT_SETTINGS.unknownFilePath;
     this.settings.highlightColor =
       String(this.settings.highlightColor || "").trim() ||
       DEFAULT_SETTINGS.highlightColor;
@@ -1081,6 +1145,13 @@ class Cet4VocabPlugin extends Plugin {
     this.settings.hotkey = hotkey.key
       ? hotkey
       : normalizeHotkey(DEFAULT_SETTINGS.hotkey);
+
+    const unknownHotkey = normalizeHotkey(
+      saved.unknownHotkey || DEFAULT_SETTINGS.unknownHotkey,
+    );
+    this.settings.unknownHotkey = unknownHotkey.key
+      ? unknownHotkey
+      : normalizeHotkey(DEFAULT_SETTINGS.unknownHotkey);
 
     this.settings.includeTables = Boolean(this.settings.includeTables);
     this.settings.includeCode = Boolean(this.settings.includeCode);
@@ -1129,7 +1200,13 @@ class Cet4VocabPlugin extends Plugin {
   handleKeyDown(event) {
     if (this.recording) return;
     if (event.defaultPrevented || event.isComposing || event.repeat) return;
-    if (!matchesHotkey(event, this.settings.hotkey)) return;
+
+    const isMainHotkey = matchesHotkey(event, this.settings.hotkey);
+    const isUnknownHotkey = matchesHotkey(
+      event,
+      this.settings.unknownHotkey,
+    );
+    if (!isMainHotkey && !isUnknownHotkey) return;
     if (isEditableTarget(event.target)) return;
     if (document.querySelector(".modal-container, .prompt")) return;
 
@@ -1144,7 +1221,11 @@ class Cet4VocabPlugin extends Plugin {
     event.preventDefault();
     event.stopPropagation();
 
-    this.captureFromView(view, false, info);
+    if (isMainHotkey) {
+      this.captureFromView(view, false, info);
+    } else {
+      this.captureUnknownFromView(view, false, info);
+    }
   }
 
   getSelectionInfo(view) {
@@ -1278,6 +1359,77 @@ class Cet4VocabPlugin extends Plugin {
     } catch (error) {
       console.error("[cet4-vocab-capture] toggle entry failed", error);
       new Notice(`更新生词本失败：${String(error.message || error)}`);
+    }
+  }
+
+  async captureUnknownFromView(view, showMissingNotice, knownInfo) {
+    const info = knownInfo || this.getSelectionInfo(view);
+    if (!info) {
+      if (showMissingNotice) {
+        new Notice("请先选中要记录的内容");
+      }
+      return;
+    }
+
+    const text = normalizeUnknownSelection(info.text);
+    if (!text) {
+      new Notice("请先选中要记录的内容");
+      return;
+    }
+
+    try {
+      const result = await this.appendUnknown(text);
+      if (result.added) {
+        new Notice(`已记录不理解的内容 · 共 ${result.count} 条`);
+      } else {
+        new Notice("该内容已在“不理解的词”文件中");
+      }
+    } catch (error) {
+      console.error("[cet4-vocab-capture] record unknown failed", error);
+      new Notice(`记录不理解内容失败：${String(error.message || error)}`);
+    }
+  }
+
+  async appendUnknown(rawText) {
+    const entry = normalizeUnknownSelection(rawText);
+    if (!entry) return { added: false, count: 0 };
+
+    const path = this.settings.unknownFilePath;
+    const existing = await this.readTextFile(path);
+    const result = appendUnknownRecord(existing, entry);
+    if (!result.added) {
+      return { added: false, count: countUnknownLines(existing) };
+    }
+
+    await this.writeTextFile(path, result.text);
+    return { added: true, count: countUnknownLines(result.text) };
+  }
+
+  async countUnknown() {
+    const raw = await this.readTextFile(this.settings.unknownFilePath);
+    return countUnknownLines(raw);
+  }
+
+  async openUnknownFile() {
+    const rawPath = String(this.settings.unknownFilePath || "").trim();
+    if (!rawPath) {
+      new Notice("请先在插件设置中填写“不理解的词”文件路径");
+      return;
+    }
+
+    if (isAbsolutePath(rawPath)) {
+      new Notice(`“不理解的词”文件位于 vault 外，请用文件管理器打开：\n${rawPath}`);
+      return;
+    }
+
+    try {
+      const vaultPath = normalizeVaultPath(rawPath);
+      if (!(await this.app.vault.adapter.exists(vaultPath))) {
+        await this.writeTextFile(vaultPath, "");
+      }
+      await this.app.workspace.openLinkText(vaultPath, "", false);
+    } catch (error) {
+      new Notice(`打开“不理解的词”文件失败：${String(error.message || error)}`);
     }
   }
 
@@ -1536,15 +1688,31 @@ class Cet4VocabSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "CET4 生词捕获" });
+    containerEl.createEl("h2", { text: "生词捕获" });
     containerEl.createEl("p", {
-      text: "在阅读视图或编辑视图中选中英文单词、英文短语或中文词语，按下快捷键即可收录/移除。生词本作用于 vault 内所有 Markdown 文件，一行一个词条，去重。",
+      text: "主快捷键收录/移除词条并高亮；另一个快捷键把不理解的内容记录到独立文件，不做格式校验，也不参与高亮。",
     });
 
     const count = this.plugin.store ? this.plugin.store.words.size : 0;
     containerEl.createEl("p", {
       text: `当前词表：${count} 个词条 · ${this.plugin.settings.wordFilePath}`,
     });
+
+    const unknownInfo = containerEl.createEl("p", {
+      text: "不理解词：读取中…",
+    });
+    void this.plugin
+      .countUnknown()
+      .then((unknownCount) => {
+        unknownInfo.setText(
+          `不理解词：${unknownCount} 条 · ${this.plugin.settings.unknownFilePath}`,
+        );
+      })
+      .catch(() => {
+        unknownInfo.setText(
+          `不理解词：无法读取 · ${this.plugin.settings.unknownFilePath}`,
+        );
+      });
 
     new Setting(containerEl)
       .setName("生词本文件")
@@ -1565,6 +1733,22 @@ class Cet4VocabSettingTab extends PluginSettingTab {
               this.pathTimer = null;
               void this.plugin.reloadWordStore(true);
             }, 600);
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("不理解的词文件")
+      .setDesc(
+        "独立于生词本，记录不理解的内容；不参与高亮，不做格式校验。默认 不理解的词.txt。",
+      )
+      .addText((text) => {
+        text
+          .setPlaceholder(DEFAULT_SETTINGS.unknownFilePath)
+          .setValue(this.plugin.settings.unknownFilePath)
+          .onChange((value) => {
+            this.plugin.settings.unknownFilePath =
+              value.trim() || DEFAULT_SETTINGS.unknownFilePath;
+            void this.plugin.saveSettings();
           });
       });
 
@@ -1593,6 +1777,40 @@ class Cet4VocabSettingTab extends PluginSettingTab {
           if (this.hotkeyText) {
             this.hotkeyText.setValue(
               formatHotkey(this.plugin.settings.hotkey),
+            );
+          }
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("不理解词快捷键")
+      .setDesc(
+        "选中内容后记录到独立文件，不做格式校验，也不参与高亮。",
+      )
+      .addText((text) => {
+        text.setValue(formatHotkey(this.plugin.settings.unknownHotkey));
+        text.inputEl.disabled = true;
+        text.inputEl.style.width = "10em";
+        this.unknownHotkeyText = text;
+      })
+      .addButton((button) => {
+        button.setButtonText("录制").onClick(() => {
+          this.startRecording(
+            this.unknownHotkeyText,
+            button,
+            "unknownHotkey",
+          );
+        });
+      })
+      .addButton((button) => {
+        button.setButtonText("恢复默认").onClick(async () => {
+          this.plugin.settings.unknownHotkey = normalizeHotkey(
+            DEFAULT_SETTINGS.unknownHotkey,
+          );
+          await this.plugin.saveSettings();
+          if (this.unknownHotkeyText) {
+            this.unknownHotkeyText.setValue(
+              formatHotkey(this.plugin.settings.unknownHotkey),
             );
           }
         });
@@ -1682,6 +1900,11 @@ class Cet4VocabSettingTab extends PluginSettingTab {
         button.setButtonText("打开生词本").onClick(() => {
           void this.plugin.openWordFile();
         });
+      })
+      .addButton((button) => {
+        button.setButtonText("打开不理解词文件").onClick(() => {
+          void this.plugin.openUnknownFile();
+        });
       });
   }
 
@@ -1696,13 +1919,13 @@ class Cet4VocabSettingTab extends PluginSettingTab {
     if (typeof super.hide === "function") super.hide();
   }
 
-  startRecording(textComponent, button) {
+  startRecording(textComponent, button, settingKey = "hotkey") {
     if (!textComponent) return;
     if (this.plugin.recording && this.plugin.recordingCleanup) {
       this.plugin.recordingCleanup();
     }
 
-    const previous = formatHotkey(this.plugin.settings.hotkey);
+    const previous = formatHotkey(this.plugin.settings[settingKey]);
     this.plugin.recording = true;
     textComponent.setValue("请按键…");
     button.setButtonText("按 Esc 取消");
@@ -1718,7 +1941,7 @@ class Cet4VocabSettingTab extends PluginSettingTab {
         return;
       }
 
-      this.plugin.settings.hotkey = hotkey;
+      this.plugin.settings[settingKey] = hotkey;
       try {
         await this.plugin.saveSettings();
       } catch (error) {
@@ -1726,7 +1949,15 @@ class Cet4VocabSettingTab extends PluginSettingTab {
         new Notice(`保存快捷键失败：${String(error.message || error)}`);
       }
       textComponent.setValue(formatHotkey(hotkey));
-      new Notice(`快捷键已设为 ${formatHotkey(hotkey)}`);
+
+      if (
+        formatHotkey(this.plugin.settings.hotkey) ===
+        formatHotkey(this.plugin.settings.unknownHotkey)
+      ) {
+        new Notice("警告：两个快捷键相同，主快捷键会优先触发。");
+      } else {
+        new Notice(`快捷键已设为 ${formatHotkey(hotkey)}`);
+      }
     };
 
     const onKeyDown = (event) => {
@@ -1763,6 +1994,9 @@ module.exports = Cet4VocabPlugin;
 module.exports.__test = {
   normalizeEntry,
   classifyEntry,
+  normalizeUnknownSelection,
+  countUnknownLines,
+  appendUnknownRecord,
   parseWordSet,
   serializeWordSet,
   buildWordPatternSource,

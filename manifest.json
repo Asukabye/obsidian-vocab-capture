@@ -1,9 +1,9 @@
 {
   "id": "cet4-vocab-capture",
   "name": "生词捕获",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "minAppVersion": "1.5.0",
-  "description": "在阅读/编辑视图中选中英文单词、英文短语或中文词语，按键收录或移除；生词本全局共享并自动高亮。",
+  "description": "在阅读/编辑视图中收录并高亮词条；另设快捷键记录不理解内容到独立文件，不校验格式。",
   "author": "DeepSeek Harness",
   "isDesktopOnly": false
 }
