@@ -50,19 +50,26 @@ const BLOCK_SELECTOR = [
 ].join(",");
 
 /* --------------------------------------------------------------------------
- * 纯函数：单词规范化、词集读写、整词匹配、快捷键解析
+ * 纯函数：词条规范化、词集读写、中英匹配、快捷键解析
  * ------------------------------------------------------------------------ */
 
-function normalizeWord(raw) {
+const ENTRY_LIMITS = {
+  chineseMin: 2,
+  chineseMax: 20,
+  englishMaxWords: 12,
+  englishMaxChars: 80,
+};
+
+function normalizeEntry(raw) {
   if (typeof raw !== "string") return null;
 
   let s = raw
+    .replace(/\r\n?|\n/g, " ")
     .replace(/\u00a0/g, " ")
     .replace(/[\u200b-\u200d\ufeff]/g, "")
     .trim();
 
   if (!s) return null;
-  if (/\s/.test(s)) return null;
 
   s = s.replace(
     /^[\s"'“”‘’`´(\[{<«「」『』《》【】（［｛*_~—–，。！？；：、]+/u,
@@ -76,28 +83,59 @@ function normalizeWord(raw) {
   s = s.replace(/^['-]+/u, "").replace(/['-]+$/u, "");
 
   if (!s) return null;
-  if (!/^\p{Script=Latin}[\p{Script=Latin}\p{M}'-]*$/u.test(s)) return null;
-  if (!/\p{Script=Latin}/u.test(s)) return null;
-  if (Array.from(s).length < 2) return null;
 
-  return s.toLowerCase();
+  const hasHan = /\p{Script=Han}/u.test(s);
+  const hasLatin = /\p{Script=Latin}/u.test(s);
+
+  if (hasHan && hasLatin) return null;
+  if (!hasHan && !hasLatin) return null;
+
+  if (hasHan) {
+    if (!/^[\p{Script=Han}\s]+$/u.test(s)) return null;
+    s = s.replace(/\s+/g, "");
+    const length = Array.from(s).length;
+    if (length < ENTRY_LIMITS.chineseMin) return null;
+    if (length > ENTRY_LIMITS.chineseMax) return null;
+    return s;
+  }
+
+  s = s.replace(/\s+/g, " ").toLowerCase();
+  if (s.length > ENTRY_LIMITS.englishMaxChars) return null;
+
+  const tokens = s.split(" ");
+  if (tokens.length > ENTRY_LIMITS.englishMaxWords) return null;
+  if (
+    !tokens.every((token) =>
+      /^[\p{Script=Latin}\p{M}'-]+$/u.test(token),
+    )
+  ) {
+    return null;
+  }
+
+  return s.length >= 2 ? s : null;
+}
+
+function classifyEntry(entry) {
+  return /^\p{Script=Han}+$/u.test(String(entry || "")) ? "zh" : "en";
 }
 
 function parseWordSet(text) {
-  const words = new Set();
+  const entries = new Set();
   const clean = String(text == null ? "" : text).replace(/^\uFEFF/, "");
   for (const line of clean.split(/\r\n|\n|\r/)) {
-    const word = normalizeWord(line);
-    if (word) words.add(word);
+    const entry = normalizeEntry(line);
+    if (entry) entries.add(entry);
   }
-  return words;
+  return entries;
 }
 
-function serializeWordSet(words, sortAlphabetically = true) {
-  const list = Array.from(words);
+function serializeWordSet(entries, sortAlphabetically = true) {
+  const list = Array.from(entries);
   if (sortAlphabetically) {
-    list.sort((a, b) =>
-      a.localeCompare(b, "en", { sensitivity: "base" }),
+    list.sort(
+      (a, b) =>
+        a.localeCompare(b, "zh-Hans", { sensitivity: "base" }) ||
+        a.localeCompare(b),
     );
   }
   return list.length ? `${list.join("\n")}\n` : "";
@@ -109,26 +147,55 @@ function escapeWordChar(ch) {
   return ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function buildWordPatternSource(words) {
+function buildEntryPatternSource(entries) {
   const unique = Array.from(
     new Set(
-      Array.from(words || [], (word) => String(word).toLowerCase()).filter(
-        Boolean,
-      ),
+      Array.from(entries || [], (entry) => String(entry)).filter(Boolean),
     ),
-  ).sort((a, b) => b.length - a.length || a.localeCompare(b));
+  );
 
-  if (!unique.length) return null;
+  const chinese = unique
+    .filter((entry) => classifyEntry(entry) === "zh")
+    .sort((a, b) => b.length - a.length || a.localeCompare(b));
+  const english = unique
+    .filter((entry) => classifyEntry(entry) === "en")
+    .sort((a, b) => b.length - a.length || a.localeCompare(b));
 
-  const alternatives = unique
-    .map((word) => Array.from(word).map(escapeWordChar).join(""))
+  const chineseAlternatives = chinese
+    .map((entry) =>
+      Array.from(entry).map(escapeWordChar).join("\\s*"),
+    )
+    .join("|");
+  const englishAlternatives = english
+    .map((entry) =>
+      entry
+        .split(" ")
+        .map((token) =>
+          Array.from(token).map(escapeWordChar).join(""),
+        )
+        .join("\\s+"),
+    )
     .join("|");
 
-  return `(?<![\\p{L}\\p{N}_])(?:${alternatives})(?![\\p{L}\\p{N}_])`;
+  const parts = [];
+  if (chineseAlternatives) {
+    parts.push(chineseAlternatives);
+  }
+  if (englishAlternatives) {
+    parts.push(
+      `(?<![\\p{Script=Latin}\\p{N}_])(?:${englishAlternatives})(?![\\p{Script=Latin}\\p{N}_])`,
+    );
+  }
+
+  return parts.length ? `(?:${parts.join("|")})` : null;
 }
 
-function buildWordRegex(words) {
-  const source = buildWordPatternSource(words);
+function buildWordPatternSource(entries) {
+  return buildEntryPatternSource(entries);
+}
+
+function buildWordRegex(entries) {
+  const source = buildEntryPatternSource(entries);
   return source ? new RegExp(source, "giu") : null;
 }
 
@@ -280,7 +347,7 @@ function getPreviewElement(view) {
  * DOM 高亮：按块拼接文本节点，处理加粗/链接/表格等跨节点情况
  * ------------------------------------------------------------------------ */
 
-function locateGroupOffset(group, offset) {
+function locateGroupOffset(group, offset, isEnd = false) {
   if (!group.nodes.length) return null;
 
   const last = group.nodes.length - 1;
@@ -289,11 +356,17 @@ function locateGroupOffset(group, offset) {
     const length = group.nodes[i].nodeValue.length;
     const end = start + length;
 
-    if (offset < end) {
-      return { node: group.nodes[i], offset: offset - start };
+    if (offset < start) {
+      if (isEnd && i > 0) {
+        return {
+          node: group.nodes[i - 1],
+          offset: group.nodes[i - 1].nodeValue.length,
+        };
+      }
+      return { node: group.nodes[i], offset: 0 };
     }
-    if (i === last && offset <= end) {
-      return { node: group.nodes[i], offset: Math.max(0, offset - start) };
+    if (offset <= end) {
+      return { node: group.nodes[i], offset: offset - start };
     }
   }
 
@@ -304,8 +377,8 @@ function locateGroupOffset(group, offset) {
 }
 
 function createRangeForSpan(group, start, end) {
-  const startPosition = locateGroupOffset(group, start);
-  const endPosition = locateGroupOffset(group, end);
+  const startPosition = locateGroupOffset(group, start, false);
+  const endPosition = locateGroupOffset(group, end, true);
   if (!startPosition || !endPosition) return null;
 
   try {
@@ -328,56 +401,91 @@ function collectRanges(root, regex, settings) {
   const skipExistingHighlights =
     options.skipExistingHighlights !== false;
 
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
-
-      const parent = node.parentElement;
-      if (!parent) return NodeFilter.FILTER_REJECT;
-
-      if (!includeCode && parent.closest("code, pre")) {
-        return NodeFilter.FILTER_REJECT;
-      }
-      if (parent.closest("script, style, textarea, .math, .katex, .mjx-container")) {
-        return NodeFilter.FILTER_REJECT;
-      }
-      if (!includeTables && parent.closest("table")) {
-        return NodeFilter.FILTER_REJECT;
-      }
-      if (skipExistingHighlights && parent.closest("mark")) {
-        return NodeFilter.FILTER_REJECT;
-      }
-      if (parent.closest(".metadata-container, .frontmatter, .tag")) {
-        return NodeFilter.FILTER_REJECT;
-      }
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
-
   const groups = new Map();
 
-  while (walker.nextNode()) {
-    const node = walker.currentNode;
-    const parent = node.parentElement;
-    if (!parent) continue;
+  const getBlock = (element) =>
+    element.closest(BLOCK_SELECTOR) ||
+    element.closest(
+      ".markdown-preview-section, .callout-content, .markdown-embed-content",
+    ) ||
+    element;
 
-    const block =
-      parent.closest(BLOCK_SELECTOR) ||
-      parent.closest(
-        ".markdown-preview-section, .callout-content, .markdown-embed-content",
-      ) ||
-      parent;
-
+  const getGroup = (block) => {
     let group = groups.get(block);
     if (!group) {
       group = { nodes: [], offsets: [], text: "" };
       groups.set(block, group);
     }
+    return group;
+  };
 
+  const isSkippedElement = (element) => {
+    if (!includeCode && element.matches("code, pre")) return true;
+    if (
+      element.matches(
+        "script, style, textarea, .math, .katex, .mjx-container",
+      )
+    ) {
+      return true;
+    }
+    if (!includeTables && element.matches("table")) return true;
+    if (skipExistingHighlights && element.matches("mark")) return true;
+    if (element.matches(".metadata-container, .frontmatter, .tag")) {
+      return true;
+    }
+    return false;
+  };
+
+  const addText = (node) => {
+    if (!node.nodeValue) return;
+
+    const parent = node.parentElement;
+    if (!parent) return;
+
+    if (!includeCode && parent.closest("code, pre")) return;
+    if (
+      parent.closest(
+        "script, style, textarea, .math, .katex, .mjx-container",
+      )
+    ) {
+      return;
+    }
+    if (!includeTables && parent.closest("table")) return;
+    if (skipExistingHighlights && parent.closest("mark")) return;
+    if (parent.closest(".metadata-container, .frontmatter, .tag")) {
+      return;
+    }
+
+    const group = getGroup(getBlock(parent));
     group.offsets.push(group.text.length);
     group.nodes.push(node);
     group.text += node.nodeValue;
-  }
+  };
+
+  const addBreak = (element) => {
+    const parent = element.parentElement;
+    if (!parent) return;
+    const group = getGroup(getBlock(parent));
+    group.text += "\n";
+  };
+
+  const walk = (node) => {
+    for (const child of Array.from(node.childNodes || [])) {
+      if (child.nodeType === 3) {
+        addText(child);
+        continue;
+      }
+      if (child.nodeType !== 1) continue;
+      if (child.tagName === "BR") {
+        addBreak(child);
+        continue;
+      }
+      if (isSkippedElement(child)) continue;
+      walk(child);
+    }
+  };
+
+  walk(root);
 
   for (const group of groups.values()) {
     regex.lastIndex = 0;
@@ -648,7 +756,7 @@ class WordStore {
   async add(word) {
     await this.ensureLoaded();
 
-    const normalized = normalizeWord(word);
+    const normalized = normalizeEntry(word);
     if (!normalized) return false;
     if (this.words.has(normalized)) return false;
 
@@ -667,7 +775,7 @@ class WordStore {
   async remove(word) {
     await this.ensureLoaded();
 
-    const normalized = normalizeWord(word);
+    const normalized = normalizeEntry(word);
     if (!normalized || !this.words.has(normalized)) return false;
 
     const previous = new Set(this.words);
@@ -753,7 +861,7 @@ class Cet4VocabPlugin extends Plugin {
 
     this.addCommand({
       id: "toggle-selected-word",
-      name: "收录/移除选中的单词",
+      name: "收录/移除选中的词条",
       checkCallback: (checking) => {
         const view = this.app.workspace.getActiveViewOfType(MarkdownView);
         const mode = view ? view.getMode() : null;
@@ -778,14 +886,14 @@ class Cet4VocabPlugin extends Plugin {
       name: "重新加载生词本",
       callback: async () => {
         if (await this.reloadWordStore()) {
-          new Notice(`生词本已加载：${this.store.words.size} 个词`);
+          new Notice(`生词本已加载：${this.store.words.size} 个词条`);
         }
       },
     });
 
     this.addCommand({
       id: "refresh-highlights",
-      name: "刷新单词高亮",
+      name: "刷新词条高亮",
       callback: () => this.scheduleRefresh(0),
     });
 
@@ -1092,14 +1200,16 @@ class Cet4VocabPlugin extends Plugin {
     const info = knownInfo || this.getSelectionInfo(view);
     if (!info) {
       if (showMissingNotice) {
-        new Notice("请先在阅读区或编辑器中选中一个英文单词");
+        new Notice("请先选中英文单词、英文短语或中文词语");
       }
       return;
     }
 
-    const word = normalizeWord(info.text);
-    if (!word) {
-      new Notice("请只选择一个英文单词（不支持多词、数字或符号）");
+    const entry = normalizeEntry(info.text);
+    if (!entry) {
+      new Notice(
+        "请选择一个英文单词、英文短语或中文词语；不支持中英混合、数字或内部标点",
+      );
       return;
     }
 
@@ -1128,11 +1238,11 @@ class Cet4VocabPlugin extends Plugin {
       return;
     }
 
-    void this.toggleWord(word);
+    void this.toggleEntry(entry);
   }
 
-  async toggleWord(word) {
-    const normalized = normalizeWord(word);
+  async toggleEntry(entry) {
+    const normalized = normalizeEntry(entry);
     if (!normalized) return;
 
     try {
@@ -1145,14 +1255,19 @@ class Cet4VocabPlugin extends Plugin {
       this.bumpWordsVersion();
       this.scheduleRefresh(0);
 
+      const kind = classifyEntry(normalized);
+      const label =
+        kind === "zh"
+          ? "中文词条"
+          : normalized.includes(" ")
+            ? "英文短语"
+            : "英文单词";
+      const count = this.store.words.size;
+
       if (changed && existed) {
-        new Notice(
-          `已移除 “${normalized}” · 剩余 ${this.store.words.size} 个`,
-        );
+        new Notice(`已移除${label}“${normalized}” · 剩余 ${count} 个词条`);
       } else if (changed) {
-        new Notice(
-          `已收录 “${normalized}” · 共 ${this.store.words.size} 个`,
-        );
+        new Notice(`已收录${label}“${normalized}” · 共 ${count} 个词条`);
       } else {
         new Notice(
           existed
@@ -1161,7 +1276,7 @@ class Cet4VocabPlugin extends Plugin {
         );
       }
     } catch (error) {
-      console.error("[cet4-vocab-capture] toggle word failed", error);
+      console.error("[cet4-vocab-capture] toggle entry failed", error);
       new Notice(`更新生词本失败：${String(error.message || error)}`);
     }
   }
@@ -1423,12 +1538,12 @@ class Cet4VocabSettingTab extends PluginSettingTab {
 
     containerEl.createEl("h2", { text: "CET4 生词捕获" });
     containerEl.createEl("p", {
-      text: "在阅读视图或编辑视图中选中一个英文单词，按下快捷键即可收录/移除。生词本作用于 vault 内所有 Markdown 文件，一行一词，去重。",
+      text: "在阅读视图或编辑视图中选中英文单词、英文短语或中文词语，按下快捷键即可收录/移除。生词本作用于 vault 内所有 Markdown 文件，一行一个词条，去重。",
     });
 
     const count = this.plugin.store ? this.plugin.store.words.size : 0;
     containerEl.createEl("p", {
-      text: `当前词表：${count} 个词 · ${this.plugin.settings.wordFilePath}`,
+      text: `当前词表：${count} 个词条 · ${this.plugin.settings.wordFilePath}`,
     });
 
     new Setting(containerEl)
@@ -1456,7 +1571,7 @@ class Cet4VocabSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("收录快捷键")
       .setDesc(
-        "在阅读模式下选中单词后按下。支持单键或组合键；单键只在阅读区有选区时生效。",
+        "在阅读/编辑视图中选中词条后按下。支持单键或组合键；单键只在有选区时生效。",
       )
       .addText((text) => {
         text.setValue(formatHotkey(this.plugin.settings.hotkey));
@@ -1501,7 +1616,7 @@ class Cet4VocabSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("包含表格")
-      .setDesc("是否高亮表格单元格中的单词（词库表）。")
+      .setDesc("是否高亮表格单元格中的词条（词库表）。")
       .addToggle((toggle) => {
         toggle
           .setValue(Boolean(this.plugin.settings.includeTables))
@@ -1559,7 +1674,7 @@ class Cet4VocabSettingTab extends PluginSettingTab {
       .addButton((button) => {
         button.setButtonText("重新加载").onClick(async () => {
           if (await this.plugin.reloadWordStore(true)) {
-            new Notice(`已加载 ${this.plugin.store.words.size} 个词`);
+            new Notice(`已加载 ${this.plugin.store.words.size} 个词条`);
           }
         });
       })
@@ -1646,7 +1761,8 @@ class Cet4VocabSettingTab extends PluginSettingTab {
 
 module.exports = Cet4VocabPlugin;
 module.exports.__test = {
-  normalizeWord,
+  normalizeEntry,
+  classifyEntry,
   parseWordSet,
   serializeWordSet,
   buildWordPatternSource,

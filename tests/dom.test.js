@@ -152,3 +152,34 @@ test("DOM: Range 非空且可 toString", () => {
   assert.ok(ranges.length >= 2);
   assert.ok(ranges.every((range) => range.toString().length > 0));
 });
+
+test("DOM: 英文短语跨 <br>、中文词语跨格式节点", () => {
+  const dom = new JSDOM(`<!doctype html><html><body>
+    <div class="markdown-preview-view">
+      <div class="markdown-preview-section">
+        <p><strong>give</strong><br>up now</p>
+        <p>人工<br><strong>智能</strong> 技术</p>
+        <p>give</p><p>up</p>
+      </div>
+    </div>
+  </body></html>`);
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.NodeFilter = dom.window.NodeFilter;
+  global.Element = dom.window.Element;
+
+  const root = document.querySelector(".markdown-preview-view");
+  const ranges = collectRanges(
+    root,
+    buildWordRegex(new Set(["give up", "人工智能"])),
+    defaultSettings,
+  );
+  const texts = ranges.map((range) => range.toString());
+  assert.ok(texts.includes("giveup"), JSON.stringify(texts));
+  assert.ok(texts.includes("人工智能"), JSON.stringify(texts));
+  assert.equal(
+    texts.filter((text) => text === "giveup").length,
+    1,
+    "跨段落不应误匹配",
+  );
+});

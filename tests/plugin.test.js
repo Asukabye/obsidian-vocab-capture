@@ -129,7 +129,7 @@ test("插件: 生词本自身不会被高亮", () => {
   assert.equal(dom.window.CSS.highlights.has(HIGHLIGHT_NAME), false);
 });
 
-test("插件: toggleWord 同一入口完成添加与移除", async () => {
+test("插件: toggleEntry 同一入口完成中英词条添加与移除", async () => {
   const files = new Map();
   const storeOwner = {
     settings: { wordFilePath: "a.txt", sortAlphabetically: true },
@@ -147,13 +147,15 @@ test("插件: toggleWord 同一入口完成添加与移除", async () => {
   };
   plugin.scheduleRefresh = () => {};
 
-  await plugin.toggleWord("Beneficial");
-  assert.equal(plugin.store.words.has("beneficial"), true);
-  assert.equal(files.get("a.txt"), "beneficial\n");
+  await plugin.toggleEntry("Give   Up");
+  assert.equal(plugin.store.words.has("give up"), true);
+  assert.equal(files.get("a.txt"), "give up\n");
 
-  await plugin.toggleWord("beneficial");
-  assert.equal(plugin.store.words.has("beneficial"), false);
-  assert.equal(files.get("a.txt"), "");
+  await plugin.toggleEntry("人工智能");
+  assert.equal(plugin.store.words.has("人工智能"), true);
+
+  await plugin.toggleEntry("give up");
+  assert.equal(plugin.store.words.has("give up"), false);
 });
 
 test("插件: 动态注入 ::highlight 样式，名称与注册名一致", () => {

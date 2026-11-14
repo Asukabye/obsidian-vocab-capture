@@ -22,7 +22,8 @@ const PluginClass = require("../main.js");
 Module._load = originalLoad;
 
 const {
-  normalizeWord,
+  normalizeEntry,
+  classifyEntry,
   parseWordSet,
   serializeWordSet,
   buildWordPatternSource,
@@ -43,42 +44,69 @@ const {
   WordStore,
 } = PluginClass.__test;
 
-test("normalizeWord: 去除首尾标点、引号并转小写", () => {
-  assert.equal(normalizeWord("  Decline,  "), "decline");
-  assert.equal(normalizeWord("“people’s”"), "people's");
-  assert.equal(normalizeWord("(word)"), "word");
-  assert.equal(normalizeWord("（word）"), "word");
-  assert.equal(normalizeWord("「word」"), "word");
-  assert.equal(normalizeWord("word—"), "word");
-  assert.equal(normalizeWord("—word"), "word");
-  assert.equal(normalizeWord("students'"), "students");
+test("normalizeEntry: 英文单词去标点、转小写，保留连字符/变音符号", () => {
+  assert.equal(normalizeEntry("  Decline,  "), "decline");
+  assert.equal(normalizeEntry("“people’s”"), "people's");
+  assert.equal(normalizeEntry("(word)"), "word");
+  assert.equal(normalizeEntry("（word）"), "word");
+  assert.equal(normalizeEntry("「word」"), "word");
+  assert.equal(normalizeEntry("word—"), "word");
+  assert.equal(normalizeEntry("—word"), "word");
+  assert.equal(normalizeEntry("students'"), "students");
+  assert.equal(normalizeEntry("up-to-date"), "up-to-date");
+  assert.equal(normalizeEntry("up‑to‑date"), "up-to-date");
+  assert.equal(normalizeEntry("café"), "café");
+  assert.equal(normalizeEntry("naïve"), "naïve");
 });
 
-test("normalizeWord: 连字符、省略号、Unicode 字母", () => {
-  assert.equal(normalizeWord("up-to-date"), "up-to-date");
-  assert.equal(normalizeWord("up‑to‑date"), "up-to-date");
-  assert.equal(normalizeWord("café"), "café");
-  assert.equal(normalizeWord("naïve"), "naïve");
+test("normalizeEntry: 英文短语折叠空白、允许跨行", () => {
+  assert.equal(normalizeEntry("Give   Up"), "give up");
+  assert.equal(normalizeEntry("  in   the\nlong\trun  "), "in the long run");
+  assert.equal(normalizeEntry("as a result"), "as a result");
+  assert.equal(normalizeEntry("a lot of"), "a lot of");
 });
 
-test("normalizeWord: 拒绝多词、数字、选项字母、符号", () => {
-  assert.equal(normalizeWord("apple juice"), null);
-  assert.equal(normalizeWord("1970"), null);
-  assert.equal(normalizeWord("A)"), null);
-  assert.equal(normalizeWord("36."), null);
-  assert.equal(normalizeWord("M.Friedman"), null);
-  assert.equal(normalizeWord("C++"), null);
-  assert.equal(normalizeWord(""), null);
+test("normalizeEntry: 中文词语去首尾标点、去内部空白、允许跨行", () => {
+  assert.equal(normalizeEntry("人工智能"), "人工智能");
+  assert.equal(normalizeEntry("「经济」"), "经济");
+  assert.equal(normalizeEntry("人工 智能"), "人工智能");
+  assert.equal(normalizeEntry("人工\n智能"), "人工智能");
+  assert.equal(normalizeEntry("可持续发展，"), "可持续发展");
 });
 
-test("parseWordSet: BOM、CRLF、去重、忽略非法行", () => {
+test("normalizeEntry: 拒绝中文单字、混合脚本、内部标点、超长内容", () => {
+  assert.equal(normalizeEntry("的"), null);
+  assert.equal(normalizeEntry("经济，危机"), null);
+  assert.equal(normalizeEntry("AI技术"), null);
+  assert.equal(normalizeEntry("中文English"), null);
+  assert.equal(normalizeEntry("give, up"), null);
+  assert.equal(normalizeEntry("1970"), null);
+  assert.equal(normalizeEntry("A)"), null);
+  assert.equal(normalizeEntry("M.Friedman"), null);
+  assert.equal(normalizeEntry("C++"), null);
+  assert.equal(normalizeEntry(""), null);
+  assert.equal(normalizeEntry("one two three four five six seven eight nine ten eleven twelve thirteen"), null);
+  assert.equal(normalizeEntry("一二三四五六七八九十一二三四五六七八九十一"), null);
+});
+
+test("classifyEntry: 纯汉字为中文，其余为英文词条", () => {
+  assert.equal(classifyEntry("人工智能"), "zh");
+  assert.equal(classifyEntry("经济"), "zh");
+  assert.equal(classifyEntry("beneficial"), "en");
+  assert.equal(classifyEntry("give up"), "en");
+});
+
+test("parseWordSet: 中英混合词表、BOM、CRLF、去重、忽略非法行", () => {
   const set = parseWordSet(
-    "\uFEFFApple\r\napple\r\n\r\nDécline\r\n36.\r\nA)\r\n",
+    "\uFEFFApple\r\napple\r\ngive up\r\nGive   Up\r\n人工智能\r\n人工 智能\r\n36.\r\nAI技术\r\n",
   );
-  assert.deepEqual(Array.from(set).sort(), ["apple", "décline"]);
+  assert.deepEqual(
+    Array.from(set).sort(),
+    ["apple", "give up", "人工智能"],
+  );
 });
 
-test("serializeWordSet: 字母排序、结尾换行、空集合", () => {
+test("serializeWordSet: 排序、结尾换行、空集合", () => {
   assert.equal(
     serializeWordSet(new Set(["b", "a", "c"]), true),
     "a\nb\nc\n",
@@ -87,7 +115,7 @@ test("serializeWordSet: 字母排序、结尾换行、空集合", () => {
   assert.equal(serializeWordSet(new Set(), true), "");
 });
 
-test("整词匹配: 不匹配更长单词的子串", () => {
+test("整词匹配: 英文不匹配更长单词的子串", () => {
   const words = new Set(["work"]);
   assert.deepEqual(findMatches("working", words), []);
   assert.deepEqual(findMatches("homework", words), []);
@@ -96,7 +124,7 @@ test("整词匹配: 不匹配更长单词的子串", () => {
   assert.equal(findMatches("work, work's", words).length, 2);
 });
 
-test("整词匹配: 长词优先，不把 working 拆成 work", () => {
+test("整词匹配: 英文长词优先，不把 working 拆成 work", () => {
   const words = new Set(["work", "working"]);
   const matches = findMatches("working", words);
   assert.equal(matches.length, 1);
@@ -109,6 +137,47 @@ test("整词匹配: 弯引号与连字符变体", () => {
   assert.equal(
     findMatches("up‑to‑date", new Set(["up-to-date"])).length,
     1,
+  );
+});
+
+test("短语匹配: 大小写、多个空格、跨行、相邻中文", () => {
+  const set = new Set(["give up"]);
+  assert.equal(findMatches("give up", set).length, 1);
+  assert.equal(findMatches("Give   Up", set).length, 1);
+  assert.equal(findMatches("give\nup", set).length, 1);
+  assert.equal(findMatches("使用 give up 方法", set).length, 1);
+  assert.equal(findMatches("forgive up", set).length, 0);
+  assert.equal(findMatches("give upper", set).length, 0);
+});
+
+test("短语匹配: 英文长短语优先", () => {
+  const set = new Set(["give", "give up"]);
+  const matches = findMatches("give up", set);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].text.toLowerCase(), "give up");
+});
+
+test("中文匹配: 子串匹配、允许内部空白/换行", () => {
+  assert.equal(findMatches("人工智能技术", new Set(["人工智能"])).length, 1);
+  assert.equal(findMatches("人工 智能", new Set(["人工智能"])).length, 1);
+  assert.equal(findMatches("人工\n智能", new Set(["人工智能"])).length, 1);
+  assert.equal(findMatches("这是人工智能", new Set(["人工智能"])).length, 1);
+  assert.equal(findMatches("人工智能", new Set(["中国"])).length, 0);
+});
+
+test("中文匹配: 长词优先，避免同一位置双层高亮", () => {
+  const set = new Set(["中国", "中国人"]);
+  const matches = findMatches("中国人", set);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].text, "中国人");
+});
+
+test("混合词条: 英文短语与中文词条同时匹配", () => {
+  const set = new Set(["give up", "人工智能"]);
+  const matches = findMatches("使用 give up 方法，人工智能", set);
+  assert.deepEqual(
+    matches.map((match) => match.text),
+    ["give up", "人工智能"],
   );
 });
 
@@ -376,5 +445,63 @@ test("编辑视图: buildEditorDecorations 只标记正文生词", () => {
   assert.deepEqual(
     ranges.map((range) => text.slice(range.from, range.to)),
     ["beneficial", "people"],
+  );
+});
+
+test("编辑视图: 英文短语跨行、中文词语、行内代码跳过", () => {
+  const text = [
+    "Use give up now.",
+    "人工智能",
+    "`give up`",
+    "give",
+    "up",
+  ].join("\n");
+
+  class FakeBuilder {
+    constructor() {
+      this.ranges = [];
+    }
+    add(from, to, value) {
+      this.ranges.push({ from, to, value });
+    }
+    finish() {
+      return this.ranges;
+    }
+  }
+
+  const view = {
+    state: {
+      doc: {
+        toString: () => text,
+        sliceString: (from, to) => text.slice(from, to),
+      },
+      field: () => ({
+        file: { path: "notes/test.md", extension: "md" },
+      }),
+    },
+    visibleRanges: [{ from: 0, to: text.length }],
+  };
+
+  const plugin = {
+    settings: {
+      includeCode: false,
+      includeTables: true,
+      skipExistingHighlights: true,
+    },
+    store: { words: new Set(["give up", "人工智能"]) },
+    isWordFile: () => false,
+  };
+
+  const ranges = buildEditorDecorations(
+    view,
+    plugin,
+    Symbol("editorInfoField"),
+    { class: "mark" },
+    FakeBuilder,
+  );
+
+  assert.deepEqual(
+    ranges.map((range) => text.slice(range.from, range.to)),
+    ["give up", "人工智能", "give\nup"],
   );
 });
