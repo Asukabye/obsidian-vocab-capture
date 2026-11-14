@@ -35,7 +35,7 @@ const html = `<!doctype html>
 <html><body>
 <div class="markdown-preview-view">
   <div class="markdown-preview-section">
-    <h1>2024年6月 CET4 · 原卷文字版</h1>
+    <h1>Article title</h1>
     <p>It's well known that physical exercise is <strong>beneficial</strong> to mental health.</p>
     <p><strong>P1</strong> Six people had to move away after a fire broke out. This is a <strong>decline</strong>d trend.</p>
     <p>A <a href="#">linked</a> word and <em>moderate</em> exercise.</p>

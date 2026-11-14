@@ -38,8 +38,12 @@ Module._load = function (request, parent, isMain) {
 const PluginClass = require("../main.js");
 Module._load = originalLoad;
 
-const { WordStore, getHighlightName } = PluginClass.__test;
-const HIGHLIGHT_NAME = "cet4-vocab-capture";
+const {
+  WordStore,
+  getHighlightName,
+  getUnknownHighlightName,
+} = PluginClass.__test;
+const HIGHLIGHT_NAME = getHighlightName();
 
 function setup() {
   const dom = new JSDOM(`<!doctype html><html><body>
@@ -73,7 +77,7 @@ function setup() {
 
   const view = new obsidianStub.MarkdownView();
   view.containerEl = document.querySelector(".workspace-leaf-content");
-  view.file = { path: "原文/CET4-2024-06-S1-原文.md" };
+  view.file = { path: "notes/article.md" };
   view.getMode = () => "preview";
 
   const plugin = Object.create(PluginClass.prototype);
@@ -158,6 +162,40 @@ test("插件: toggleEntry 同一入口完成中英词条添加与移除", async 
   assert.equal(plugin.store.words.has("give up"), false);
 });
 
+test("插件: 不理解词使用独立高亮注册名", () => {
+  const { dom, plugin } = setup();
+  plugin.store.words = new Set();
+  plugin.unknownStore = { entries: new Set(["beneficial"]) };
+  plugin.refreshHighlights();
+
+  assert.equal(dom.window.CSS.highlights.has(getHighlightName()), false);
+  const highlight = dom.window.CSS.highlights.get(getUnknownHighlightName());
+  assert.ok(highlight);
+  assert.ok(
+    highlight.ranges.some((range) => range.toString() === "beneficial"),
+  );
+});
+
+test("插件: 两种高亮颜色写入 CSS 变量", () => {
+  const { dom, plugin } = setup();
+  plugin.settings.highlightColor = "#123456";
+  plugin.settings.unknownHighlightColor = "#abcdef";
+  plugin.applyHighlightColor();
+
+  assert.equal(
+    dom.window.document.body.style.getPropertyValue(
+      "--vocab-capture-highlight-color",
+    ),
+    "#123456",
+  );
+  assert.equal(
+    dom.window.document.body.style.getPropertyValue(
+      "--vocab-capture-unknown-highlight-color",
+    ),
+    "#abcdef",
+  );
+});
+
 test("插件: 动态注入 ::highlight 样式，名称与注册名一致", () => {
   const dom = new JSDOM("<!doctype html><html><head></head><body></body></html>");
   global.window = dom.window;
@@ -166,14 +204,22 @@ test("插件: 动态注入 ::highlight 样式，名称与注册名一致", () =>
   const plugin = Object.create(PluginClass.prototype);
   plugin.injectHighlightStyle();
 
-  const style = document.getElementById("cet4-vocab-highlight-style");
+  const style = document.getElementById("vocab-capture-highlight-style");
   assert.ok(style);
   assert.ok(
     style.textContent.includes(`::highlight(${getHighlightName()})`),
   );
+  assert.ok(
+    style.textContent.includes(
+      `::highlight(${getHighlightName()}-unknown)`,
+    ),
+  );
 
   plugin.removeHighlightStyle();
-  assert.equal(document.getElementById("cet4-vocab-highlight-style"), null);
+  assert.equal(
+    document.getElementById("vocab-capture-highlight-style"),
+    null,
+  );
 });
 
 test("插件: appendUnknown 写入独立文件并去重", async () => {
@@ -184,6 +230,14 @@ test("插件: appendUnknown 写入独立文件并去重", async () => {
   plugin.writeTextFile = async (path, text) => {
     files.set(path, text);
   };
+  plugin.unknownStore = {
+    entries: new Set(),
+    saving: false,
+    loadedPath: "unknown.txt",
+    ensureLoaded: async () => {},
+  };
+  plugin.bumpWordsVersion = () => {};
+  plugin.scheduleRefresh = () => {};
 
   const first = await plugin.appendUnknown("hello\nworld");
   assert.equal(first.added, true);

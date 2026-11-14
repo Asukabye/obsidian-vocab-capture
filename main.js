@@ -9,9 +9,9 @@ const {
   editorInfoField,
 } = require("obsidian");
 
-const PLUGIN_ID = "cet4-vocab-capture";
-const HIGHLIGHT_NAME = "cet4-vocab-capture";
-const HIGHLIGHT_STYLE_ID = "cet4-vocab-highlight-style";
+const PLUGIN_ID = "vocab-capture";
+const HIGHLIGHT_NAME = "vocab-capture";
+const HIGHLIGHT_STYLE_ID = "vocab-capture-highlight-style";
 
 const DEFAULT_SETTINGS = {
   wordFilePath: "生词本.txt",
@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS = {
   unknownFilePath: "不理解的词.txt",
   unknownHotkey: { modifiers: ["Alt"], key: "Q" },
   highlightColor: "rgba(64, 190, 160, 0.28)",
+  unknownHighlightColor: "rgba(236, 144, 56, 0.36)",
   includeTables: true,
   includeCode: false,
   skipExistingHighlights: true,
@@ -138,6 +139,17 @@ function countUnknownLines(text) {
     .length;
 }
 
+function parseUnknownSet(text) {
+  const entries = new Set();
+  for (const line of String(text == null ? "" : text).split(
+    /\r\n|\n|\r/,
+  )) {
+    const entry = normalizeUnknownSelection(line);
+    if (entry) entries.add(entry);
+  }
+  return entries;
+}
+
 function appendUnknownRecord(existing, entry) {
   const current = String(existing == null ? "" : existing);
   const normalized = normalizeUnknownSelection(entry);
@@ -235,6 +247,34 @@ function buildWordPatternSource(entries) {
 
 function buildWordRegex(entries) {
   const source = buildEntryPatternSource(entries);
+  return source ? new RegExp(source, "giu") : null;
+}
+
+function buildUnknownPatternSource(entries) {
+  const unique = Array.from(
+    new Set(
+      Array.from(entries || [], (entry) =>
+        normalizeUnknownSelection(String(entry)),
+      ).filter(Boolean),
+    ),
+  ).sort((a, b) => b.length - a.length || a.localeCompare(b));
+
+  if (!unique.length) return null;
+
+  const alternatives = unique
+    .map((entry) =>
+      entry
+        .split(" ")
+        .map((token) => Array.from(token).map(escapeWordChar).join(""))
+        .join("\\s+"),
+    )
+    .join("|");
+
+  return `(?:${alternatives})`;
+}
+
+function buildUnknownRegex(entries) {
+  const source = buildUnknownPatternSource(entries);
   return source ? new RegExp(source, "giu") : null;
 }
 
@@ -361,9 +401,21 @@ function getHighlightName() {
     : "vocab-highlight";
 }
 
-function buildHighlightCss(name) {
+function getUnknownHighlightName() {
+  return `${getHighlightName()}-unknown`;
+}
+
+function buildHighlightCss(name, unknownName = `${name}-unknown`) {
   return `::highlight(${name}) {
-  background-color: var(--cet4-vocab-bg, rgba(64, 190, 160, 0.28));
+  background-color: var(--vocab-capture-highlight-color, rgba(64, 190, 160, 0.28));
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+::highlight(${unknownName}) {
+  background-color: var(--vocab-capture-unknown-highlight-color, rgba(236, 144, 56, 0.36));
   color: inherit;
   text-decoration: underline;
   text-decoration-thickness: 1px;
@@ -666,10 +718,15 @@ function buildEditorDecorations(
   plugin,
   infoField,
   markDecoration,
+  unknownMarkDecoration,
   RangeSetBuilder,
 ) {
   const builder = new RangeSetBuilder();
-  if (!plugin.store || plugin.store.words.size === 0) {
+  const mainEntries = plugin.store ? plugin.store.words : new Set();
+  const unknownEntries = plugin.unknownStore
+    ? plugin.unknownStore.entries
+    : new Set();
+  if (mainEntries.size === 0 && unknownEntries.size === 0) {
     return builder.finish();
   }
 
@@ -678,33 +735,56 @@ function buildEditorDecorations(
   if (
     !file ||
     String(file.extension || "").toLowerCase() !== "md" ||
-    plugin.isWordFile(file)
+    plugin.isWordFile(file) ||
+    (plugin.isUnknownFile ? plugin.isUnknownFile(file) : false)
   ) {
     return builder.finish();
   }
 
-  const regex = buildWordRegex(plugin.store.words);
-  if (!regex) return builder.finish();
+  const mainRegex = buildWordRegex(mainEntries);
+  const unknownRegex = buildUnknownRegex(unknownEntries);
+  if (!mainRegex && !unknownRegex) return builder.finish();
 
-  const skipRanges = collectEditorSkipRanges(
-    view.state.doc.toString(),
-    plugin.settings,
-  );
+  const text = view.state.doc.toString();
+  const skipRanges = collectEditorSkipRanges(text, plugin.settings);
+  const mainRanges = [];
+  const unknownRanges = [];
 
-  for (const visible of view.visibleRanges) {
-    const text = view.state.doc.sliceString(visible.from, visible.to);
-    regex.lastIndex = 0;
-    let match;
-    while ((match = regex.exec(text)) !== null) {
-      if (!match[0]) {
-        regex.lastIndex += 1;
-        continue;
+  const collect = (regex, target) => {
+    if (!regex) return;
+    for (const visible of view.visibleRanges) {
+      const slice = view.state.doc.sliceString(visible.from, visible.to);
+      regex.lastIndex = 0;
+      let match;
+      while ((match = regex.exec(slice)) !== null) {
+        if (!match[0]) {
+          regex.lastIndex += 1;
+          continue;
+        }
+        const from = visible.from + match.index;
+        const to = from + match[0].length;
+        if (overlapsRanges(from, to, skipRanges)) continue;
+        target.push({ from, to });
       }
-      const from = visible.from + match.index;
-      const to = from + match[0].length;
-      if (overlapsRanges(from, to, skipRanges)) continue;
-      builder.add(from, to, markDecoration);
     }
+  };
+
+  collect(mainRegex, mainRanges);
+  collect(unknownRegex, unknownRanges);
+  unknownRanges.sort((a, b) => a.from - b.from || a.to - b.to);
+
+  const decorations = [];
+  for (const range of mainRanges) {
+    if (overlapsRanges(range.from, range.to, unknownRanges)) continue;
+    decorations.push({ ...range, decoration: markDecoration });
+  }
+  for (const range of unknownRanges) {
+    decorations.push({ ...range, decoration: unknownMarkDecoration });
+  }
+
+  decorations.sort((a, b) => a.from - b.from || a.to - b.to);
+  for (const item of decorations) {
+    builder.add(item.from, item.to, item.decoration);
   }
 
   return builder.finish();
@@ -714,7 +794,10 @@ function createEditorHighlightExtension(plugin, editorApi) {
   const { Decoration, ViewPlugin } = editorApi.view;
   const { RangeSetBuilder } = editorApi.state;
   const markDecoration = Decoration.mark({
-    class: "cet4-vocab-editor-highlight",
+    class: "vocab-capture-highlight",
+  });
+  const unknownMarkDecoration = Decoration.mark({
+    class: "vocab-capture-unknown-highlight",
   });
 
   const safeBuild = (view) => {
@@ -724,10 +807,11 @@ function createEditorHighlightExtension(plugin, editorApi) {
         plugin,
         editorInfoField,
         markDecoration,
+        unknownMarkDecoration,
         RangeSetBuilder,
       );
     } catch (error) {
-      console.warn("[cet4-vocab-capture] build editor decorations failed", error);
+      console.warn("[vocab-capture] build editor decorations failed", error);
       return new RangeSetBuilder().finish();
     }
   };
@@ -846,11 +930,34 @@ class WordStore {
   }
 }
 
+class UnknownStore {
+  constructor(plugin) {
+    this.plugin = plugin;
+    this.entries = new Set();
+    this.saving = false;
+    this.loadedPath = null;
+  }
+
+  async load() {
+    const raw = await this.plugin.readTextFile(
+      this.plugin.settings.unknownFilePath,
+    );
+    this.entries = parseUnknownSet(raw);
+    this.loadedPath = this.plugin.settings.unknownFilePath;
+  }
+
+  async ensureLoaded() {
+    if (this.loadedPath !== this.plugin.settings.unknownFilePath) {
+      await this.load();
+    }
+  }
+}
+
 /* --------------------------------------------------------------------------
  * 插件本体
  * ------------------------------------------------------------------------ */
 
-class Cet4VocabPlugin extends Plugin {
+class VocabCapturePlugin extends Plugin {
   async onload() {
     await this.loadSettings();
 
@@ -859,6 +966,7 @@ class Cet4VocabPlugin extends Plugin {
     this.recording = false;
     this.recordingCleanup = null;
     this.currentHighlight = null;
+    this.currentUnknownHighlight = null;
     this.wordsVersion = 0;
     this.editorApi = null;
     this.editorRefreshEffect = null;
@@ -881,8 +989,16 @@ class Cet4VocabPlugin extends Plugin {
     try {
       await this.store.load();
     } catch (error) {
-      console.error("[cet4-vocab-capture] load word list failed", error);
+      console.error("[vocab-capture] load word list failed", error);
       new Notice(`读取生词本失败：${String(error.message || error)}`);
+    }
+
+    this.unknownStore = new UnknownStore(this);
+    try {
+      await this.unknownStore.load();
+    } catch (error) {
+      console.error("[vocab-capture] load unknown list failed", error);
+      new Notice(`读取不理解词文件失败：${String(error.message || error)}`);
     }
 
     this.applyHighlightColor();
@@ -896,7 +1012,7 @@ class Cet4VocabPlugin extends Plugin {
       );
     }
 
-    this.addSettingTab(new Cet4VocabSettingTab(this.app, this));
+    this.addSettingTab(new VocabCaptureSettingTab(this.app, this));
 
     this.addCommand({
       id: "toggle-selected-word",
@@ -992,6 +1108,17 @@ class Cet4VocabPlugin extends Plugin {
           !this.store.saving
         ) {
           void this.reloadWordStore(false);
+          return;
+        }
+
+        const unknownPath = this.getVaultUnknownPath();
+        if (
+          unknownPath &&
+          file.path === unknownPath &&
+          this.unknownStore &&
+          !this.unknownStore.saving
+        ) {
+          void this.reloadUnknownStore(false);
         }
       }),
     );
@@ -1006,6 +1133,17 @@ class Cet4VocabPlugin extends Plugin {
           !this.store.saving
         ) {
           void this.reloadWordStore(false);
+          return;
+        }
+
+        const unknownPath = this.getVaultUnknownPath();
+        if (
+          unknownPath &&
+          file.path === unknownPath &&
+          this.unknownStore &&
+          !this.unknownStore.saving
+        ) {
+          void this.reloadUnknownStore(false);
         }
       }),
     );
@@ -1015,6 +1153,14 @@ class Cet4VocabPlugin extends Plugin {
         const wordPath = this.getVaultWordPath();
         if (wordPath && file.path === wordPath) {
           this.store.words = new Set();
+          this.bumpWordsVersion();
+          this.scheduleRefresh(0);
+          return;
+        }
+
+        const unknownPath = this.getVaultUnknownPath();
+        if (unknownPath && file.path === unknownPath) {
+          this.unknownStore.entries = new Set();
           this.bumpWordsVersion();
           this.scheduleRefresh(0);
         }
@@ -1028,6 +1174,14 @@ class Cet4VocabPlugin extends Plugin {
           this.settings.wordFilePath = file.path;
           void this.saveSettings();
           void this.reloadWordStore(false);
+          return;
+        }
+
+        const unknownPath = this.getVaultUnknownPath();
+        if (unknownPath && oldPath === unknownPath) {
+          this.settings.unknownFilePath = file.path;
+          void this.saveSettings();
+          void this.reloadUnknownStore(false);
         }
       }),
     );
@@ -1064,7 +1218,7 @@ class Cet4VocabPlugin extends Plugin {
       );
     } catch (error) {
       console.warn(
-        "[cet4-vocab-capture] editor highlighting unavailable",
+        "[vocab-capture] editor highlighting unavailable",
         error,
       );
       this.editorApi = null;
@@ -1113,7 +1267,12 @@ class Cet4VocabPlugin extends Plugin {
     this.clearHighlights();
 
     if (typeof document !== "undefined" && document.body) {
-      document.body.style.removeProperty("--cet4-vocab-bg");
+      document.body.style.removeProperty(
+        "--vocab-capture-highlight-color",
+      );
+      document.body.style.removeProperty(
+        "--vocab-capture-unknown-highlight-color",
+      );
     }
   }
 
@@ -1122,7 +1281,7 @@ class Cet4VocabPlugin extends Plugin {
     try {
       data = await this.loadData();
     } catch (error) {
-      console.error("[cet4-vocab-capture] load settings failed", error);
+      console.error("[vocab-capture] load settings failed", error);
     }
 
     const saved = data && typeof data === "object" ? data : {};
@@ -1138,6 +1297,9 @@ class Cet4VocabPlugin extends Plugin {
     this.settings.highlightColor =
       String(this.settings.highlightColor || "").trim() ||
       DEFAULT_SETTINGS.highlightColor;
+    this.settings.unknownHighlightColor =
+      String(this.settings.unknownHighlightColor || "").trim() ||
+      DEFAULT_SETTINGS.unknownHighlightColor;
 
     const hotkey = normalizeHotkey(
       saved.hotkey || DEFAULT_SETTINGS.hotkey,
@@ -1172,11 +1334,31 @@ class Cet4VocabPlugin extends Plugin {
 
   applyHighlightColor() {
     if (typeof document === "undefined" || !document.body) return;
+
     const color = String(this.settings.highlightColor || "").trim();
     if (color) {
-      document.body.style.setProperty("--cet4-vocab-bg", color);
+      document.body.style.setProperty(
+        "--vocab-capture-highlight-color",
+        color,
+      );
     } else {
-      document.body.style.removeProperty("--cet4-vocab-bg");
+      document.body.style.removeProperty(
+        "--vocab-capture-highlight-color",
+      );
+    }
+
+    const unknownColor = String(
+      this.settings.unknownHighlightColor || "",
+    ).trim();
+    if (unknownColor) {
+      document.body.style.setProperty(
+        "--vocab-capture-unknown-highlight-color",
+        unknownColor,
+      );
+    } else {
+      document.body.style.removeProperty(
+        "--vocab-capture-unknown-highlight-color",
+      );
     }
   }
 
@@ -1185,7 +1367,10 @@ class Cet4VocabPlugin extends Plugin {
     this.removeHighlightStyle();
     const style = document.createElement("style");
     style.id = HIGHLIGHT_STYLE_ID;
-    style.textContent = buildHighlightCss(getHighlightName());
+    style.textContent = buildHighlightCss(
+      getHighlightName(),
+      getUnknownHighlightName(),
+    );
     (document.head || document.body).appendChild(style);
     this.highlightStyleEl = style;
   }
@@ -1357,7 +1542,7 @@ class Cet4VocabPlugin extends Plugin {
         );
       }
     } catch (error) {
-      console.error("[cet4-vocab-capture] toggle entry failed", error);
+      console.error("[vocab-capture] toggle entry failed", error);
       new Notice(`更新生词本失败：${String(error.message || error)}`);
     }
   }
@@ -1385,7 +1570,7 @@ class Cet4VocabPlugin extends Plugin {
         new Notice("该内容已在“不理解的词”文件中");
       }
     } catch (error) {
-      console.error("[cet4-vocab-capture] record unknown failed", error);
+      console.error("[vocab-capture] record unknown failed", error);
       new Notice(`记录不理解内容失败：${String(error.message || error)}`);
     }
   }
@@ -1394,6 +1579,7 @@ class Cet4VocabPlugin extends Plugin {
     const entry = normalizeUnknownSelection(rawText);
     if (!entry) return { added: false, count: 0 };
 
+    await this.unknownStore.ensureLoaded();
     const path = this.settings.unknownFilePath;
     const existing = await this.readTextFile(path);
     const result = appendUnknownRecord(existing, entry);
@@ -1401,13 +1587,24 @@ class Cet4VocabPlugin extends Plugin {
       return { added: false, count: countUnknownLines(existing) };
     }
 
-    await this.writeTextFile(path, result.text);
+    this.unknownStore.saving = true;
+    try {
+      await this.writeTextFile(path, result.text);
+    } finally {
+      this.unknownStore.saving = false;
+    }
+
+    this.unknownStore.entries.add(entry);
+    this.unknownStore.loadedPath = path;
+    this.bumpWordsVersion();
+    this.scheduleRefresh(0);
+
     return { added: true, count: countUnknownLines(result.text) };
   }
 
   async countUnknown() {
-    const raw = await this.readTextFile(this.settings.unknownFilePath);
-    return countUnknownLines(raw);
+    await this.unknownStore.ensureLoaded();
+    return this.unknownStore.entries.size;
   }
 
   async openUnknownFile() {
@@ -1441,6 +1638,27 @@ class Cet4VocabPlugin extends Plugin {
       return file.path === normalizeVaultPath(rawPath);
     } catch (error) {
       return false;
+    }
+  }
+
+  isUnknownFile(file) {
+    if (!file) return false;
+    const rawPath = String(this.settings.unknownFilePath || "").trim();
+    if (!rawPath || isAbsolutePath(rawPath)) return false;
+    try {
+      return file.path === normalizeVaultPath(rawPath);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  getVaultUnknownPath() {
+    const rawPath = String(this.settings.unknownFilePath || "").trim();
+    if (!rawPath || isAbsolutePath(rawPath)) return null;
+    try {
+      return normalizeVaultPath(rawPath);
+    } catch (error) {
+      return null;
     }
   }
 
@@ -1550,9 +1768,24 @@ class Cet4VocabPlugin extends Plugin {
       this.scheduleRefresh(0);
       return true;
     } catch (error) {
-      console.error("[cet4-vocab-capture] reload word list failed", error);
+      console.error("[vocab-capture] reload word list failed", error);
       if (showNotice) {
         new Notice(`读取生词本失败：${String(error.message || error)}`);
+      }
+      return false;
+    }
+  }
+
+  async reloadUnknownStore(showNotice = false) {
+    try {
+      await this.unknownStore.load();
+      this.bumpWordsVersion();
+      this.scheduleRefresh(0);
+      return true;
+    } catch (error) {
+      console.error("[vocab-capture] reload unknown list failed", error);
+      if (showNotice) {
+        new Notice(`读取不理解词文件失败：${String(error.message || error)}`);
       }
       return false;
     }
@@ -1569,7 +1802,7 @@ class Cet4VocabPlugin extends Plugin {
         this.refreshHighlights();
         this.refreshEditorHighlights();
       } catch (error) {
-        console.error("[cet4-vocab-capture] refresh failed", error);
+        console.error("[vocab-capture] refresh failed", error);
       }
     }, delay);
   }
@@ -1612,52 +1845,96 @@ class Cet4VocabPlugin extends Plugin {
 
   refreshHighlights() {
     if (!this.highlightSupported) return;
-    if (!this.store || this.store.words.size === 0) {
+
+    const mainEntries = this.store ? this.store.words : new Set();
+    const unknownEntries = this.unknownStore
+      ? this.unknownStore.entries
+      : new Set();
+    if (mainEntries.size === 0 && unknownEntries.size === 0) {
       this.clearHighlights();
       return;
     }
 
-    const regex = buildWordRegex(this.store.words);
-    if (!regex) {
+    const mainRegex = buildWordRegex(mainEntries);
+    const unknownRegex = buildUnknownRegex(unknownEntries);
+    if (!mainRegex && !unknownRegex) {
       this.clearHighlights();
       return;
     }
 
-    const ranges = [];
+    const mainRanges = [];
+    const unknownRanges = [];
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
       if (!(view instanceof MarkdownView)) continue;
       if (view.getMode() !== "preview") continue;
-      if (!view.file || this.isWordFile(view.file)) continue;
+      if (
+        !view.file ||
+        this.isWordFile(view.file) ||
+        this.isUnknownFile(view.file)
+      ) {
+        continue;
+      }
 
       const preview = getPreviewElement(view);
       if (!preview) continue;
       if (preview.ownerDocument !== document) continue;
 
-      ranges.push(
-        ...collectRanges(preview, regex, {
-          includeCode: this.settings.includeCode,
-          includeTables: this.settings.includeTables,
-          skipExistingHighlights: this.settings.skipExistingHighlights,
-        }),
-      );
+      const rangeOptions = {
+        includeCode: this.settings.includeCode,
+        includeTables: this.settings.includeTables,
+        skipExistingHighlights: this.settings.skipExistingHighlights,
+      };
+      if (mainRegex) {
+        mainRanges.push(...collectRanges(preview, mainRegex, rangeOptions));
+      }
+      if (unknownRegex) {
+        unknownRanges.push(
+          ...collectRanges(preview, unknownRegex, rangeOptions),
+        );
+      }
     }
 
-    if (!ranges.length) {
-      this.clearHighlights();
-      return;
+    this.currentHighlight = this.setHighlight(
+      getHighlightName(),
+      mainRanges,
+    );
+    this.currentUnknownHighlight = this.setHighlight(
+      getUnknownHighlightName(),
+      unknownRanges,
+    );
+  }
+
+  setHighlight(name, ranges) {
+    if (
+      typeof window === "undefined" ||
+      !window.CSS ||
+      !window.CSS.highlights ||
+      !this.HighlightCtor
+    ) {
+      return null;
+    }
+
+    if (!ranges || !ranges.length) {
+      try {
+        window.CSS.highlights.delete(name);
+      } catch (error) {
+        // 注册表被宿主清理时忽略。
+      }
+      return null;
     }
 
     const highlight = new this.HighlightCtor();
     for (const range of ranges) {
       highlight.add(range);
     }
-    window.CSS.highlights.set(getHighlightName(), highlight);
-    this.currentHighlight = highlight;
+    window.CSS.highlights.set(name, highlight);
+    return highlight;
   }
 
   clearHighlights() {
     this.currentHighlight = null;
+    this.currentUnknownHighlight = null;
     if (
       typeof window === "undefined" ||
       !window.CSS ||
@@ -1665,10 +1942,12 @@ class Cet4VocabPlugin extends Plugin {
     ) {
       return;
     }
-    try {
-      window.CSS.highlights.delete(getHighlightName());
-    } catch (error) {
-      // 注册表被宿主清理时忽略。
+    for (const name of [getHighlightName(), getUnknownHighlightName()]) {
+      try {
+        window.CSS.highlights.delete(name);
+      } catch (error) {
+        // 注册表被宿主清理时忽略。
+      }
     }
   }
 }
@@ -1677,11 +1956,12 @@ class Cet4VocabPlugin extends Plugin {
  * 设置页
  * ------------------------------------------------------------------------ */
 
-class Cet4VocabSettingTab extends PluginSettingTab {
+class VocabCaptureSettingTab extends PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
     this.pathTimer = null;
+    this.unknownPathTimer = null;
   }
 
   display() {
@@ -1690,7 +1970,7 @@ class Cet4VocabSettingTab extends PluginSettingTab {
 
     containerEl.createEl("h2", { text: "生词捕获" });
     containerEl.createEl("p", {
-      text: "主快捷键收录/移除词条并高亮；另一个快捷键把不理解的内容记录到独立文件，不做格式校验，也不参与高亮。",
+      text: "主快捷键收录/移除词条并高亮；另一个快捷键把不理解的内容记录到独立文件，使用橙色高亮，不做格式校验。",
     });
 
     const count = this.plugin.store ? this.plugin.store.words.size : 0;
@@ -1739,7 +2019,7 @@ class Cet4VocabSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("不理解的词文件")
       .setDesc(
-        "独立于生词本，记录不理解的内容；不参与高亮，不做格式校验。默认 不理解的词.txt。",
+        "独立于生词本，记录不理解的内容；使用橙色独立高亮，不做格式校验。默认 不理解的词.txt。",
       )
       .addText((text) => {
         text
@@ -1749,6 +2029,14 @@ class Cet4VocabSettingTab extends PluginSettingTab {
             this.plugin.settings.unknownFilePath =
               value.trim() || DEFAULT_SETTINGS.unknownFilePath;
             void this.plugin.saveSettings();
+
+            if (this.unknownPathTimer) {
+              window.clearTimeout(this.unknownPathTimer);
+            }
+            this.unknownPathTimer = window.setTimeout(() => {
+              this.unknownPathTimer = null;
+              void this.plugin.reloadUnknownStore(true);
+            }, 600);
           });
       });
 
@@ -1785,7 +2073,7 @@ class Cet4VocabSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("不理解词快捷键")
       .setDesc(
-        "选中内容后记录到独立文件，不做格式校验，也不参与高亮。",
+        "选中内容后记录到独立文件并橙色高亮，不做格式校验。",
       )
       .addText((text) => {
         text.setValue(formatHotkey(this.plugin.settings.unknownHotkey));
@@ -1828,6 +2116,22 @@ class Cet4VocabSettingTab extends PluginSettingTab {
           .onChange((value) => {
             this.plugin.settings.highlightColor =
               value.trim() || DEFAULT_SETTINGS.highlightColor;
+            void this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("不理解词高亮颜色")
+      .setDesc(
+        "不理解词使用独立颜色高亮，默认橙色；任意 CSS 颜色值。",
+      )
+      .addText((text) => {
+        text
+          .setPlaceholder(DEFAULT_SETTINGS.unknownHighlightColor)
+          .setValue(this.plugin.settings.unknownHighlightColor)
+          .onChange((value) => {
+            this.plugin.settings.unknownHighlightColor =
+              value.trim() || DEFAULT_SETTINGS.unknownHighlightColor;
             void this.plugin.saveSettings();
           });
       });
@@ -1913,6 +2217,10 @@ class Cet4VocabSettingTab extends PluginSettingTab {
       window.clearTimeout(this.pathTimer);
       this.pathTimer = null;
     }
+    if (this.unknownPathTimer) {
+      window.clearTimeout(this.unknownPathTimer);
+      this.unknownPathTimer = null;
+    }
     if (this.plugin.recording && this.plugin.recordingCleanup) {
       this.plugin.recordingCleanup();
     }
@@ -1945,7 +2253,7 @@ class Cet4VocabSettingTab extends PluginSettingTab {
       try {
         await this.plugin.saveSettings();
       } catch (error) {
-        console.error("[cet4-vocab-capture] save hotkey failed", error);
+        console.error("[vocab-capture] save hotkey failed", error);
         new Notice(`保存快捷键失败：${String(error.message || error)}`);
       }
       textComponent.setValue(formatHotkey(hotkey));
@@ -1990,17 +2298,20 @@ class Cet4VocabSettingTab extends PluginSettingTab {
  * 导出
  * ------------------------------------------------------------------------ */
 
-module.exports = Cet4VocabPlugin;
+module.exports = VocabCapturePlugin;
 module.exports.__test = {
   normalizeEntry,
   classifyEntry,
   normalizeUnknownSelection,
   countUnknownLines,
+  parseUnknownSet,
   appendUnknownRecord,
   parseWordSet,
   serializeWordSet,
   buildWordPatternSource,
   buildWordRegex,
+  buildUnknownPatternSource,
+  buildUnknownRegex,
   findMatches,
   normalizeHotkey,
   formatHotkey,
@@ -2014,6 +2325,8 @@ module.exports.__test = {
   overlapsRanges,
   isEditableTarget,
   getHighlightName,
+  getUnknownHighlightName,
   buildHighlightCss,
   WordStore,
+  UnknownStore,
 };

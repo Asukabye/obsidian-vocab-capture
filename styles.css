@@ -1,7 +1,16 @@
-/* 阅读视图的高亮样式由 main.js 动态注入，名称与 HIGHLIGHT_NAME 保持一致。
-   这样修改插件名称/高亮注册名时，不会出现 ::highlight() 名称不匹配。 */
-.cet4-vocab-editor-highlight {
-  background-color: var(--cet4-vocab-bg, rgba(64, 190, 160, 0.28));
+/* 阅读视图的 ::highlight() 样式由 main.js 动态注入，名称与高亮注册名保持一致。
+   编辑视图使用下面两个 class；颜色由设置页写入 CSS 变量。 */
+.vocab-capture-highlight {
+  background-color: var(--vocab-capture-highlight-color, rgba(64, 190, 160, 0.28));
+  color: inherit;
+  border-radius: 2px;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.vocab-capture-unknown-highlight {
+  background-color: var(--vocab-capture-unknown-highlight-color, rgba(236, 144, 56, 0.36));
   color: inherit;
   border-radius: 2px;
   text-decoration: underline;

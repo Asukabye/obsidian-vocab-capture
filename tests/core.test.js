@@ -31,7 +31,9 @@ const {
   serializeWordSet,
   buildWordPatternSource,
   buildWordRegex,
+  buildUnknownRegex,
   findMatches,
+  parseUnknownSet,
   normalizeHotkey,
   formatHotkey,
   eventToHotkey,
@@ -43,6 +45,7 @@ const {
   overlapsRanges,
   isEditableTarget,
   getHighlightName,
+  getUnknownHighlightName,
   buildHighlightCss,
   WordStore,
 } = PluginClass.__test;
@@ -120,6 +123,24 @@ test("不理解词: 追加记录、保留原有内容、精确去重", () => {
     added: false,
   });
   assert.equal(countUnknownLines("a\n\nb\n"), 2);
+});
+
+test("不理解词: 任意文本可作为高亮条目", () => {
+  const entries = parseUnknownSet(
+    "Hello   World\n你好，世界！\nC++\n\nHello World\n",
+  );
+  assert.deepEqual(
+    Array.from(entries).sort(),
+    ["C++", "Hello World", "你好，世界！"].sort(),
+  );
+
+  const regex = buildUnknownRegex(entries);
+  const matches = [];
+  let match;
+  while ((match = regex.exec("Say hello world and 你好，世界！ with C++.")) !== null) {
+    matches.push(match[0]);
+  }
+  assert.deepEqual(matches, ["hello world", "你好，世界！", "C++"]);
 });
 
 test("parseWordSet: 中英混合词表、BOM、CRLF、去重、忽略非法行", () => {
@@ -315,11 +336,19 @@ test("按键: CM6 编辑器不当作普通输入框，设置输入框仍然跳�
 
 test("高亮名称: 动态 CSS 与注册名保持一致", () => {
   const name = getHighlightName();
+  const unknownName = getUnknownHighlightName();
   assert.match(name, /^[A-Za-z_][A-Za-z0-9_-]*$/);
-  const css = buildHighlightCss(name);
+  assert.match(unknownName, /^[A-Za-z_][A-Za-z0-9_-]*$/);
+  const css = buildHighlightCss(name, unknownName);
   assert.ok(css.includes(`::highlight(${name})`));
-  assert.ok(css.includes("--cet4-vocab-bg"));
-  assert.ok(buildHighlightCss("vocab-capture").includes("::highlight(vocab-capture)"));
+  assert.ok(css.includes(`::highlight(${unknownName})`));
+  assert.ok(css.includes("--vocab-capture-highlight-color"));
+  assert.ok(css.includes("--vocab-capture-unknown-highlight-color"));
+  assert.ok(
+    buildHighlightCss("vocab-capture").includes(
+      "::highlight(vocab-capture)",
+    ),
+  );
 });
 
 test("WordStore: 去重、排序、写入，以及切换路径前先加载", async () => {
@@ -366,7 +395,7 @@ test("WordStore: remove 删除并写回，未收录返回 false", async () => {
 test("编辑视图: 跳过 frontmatter、代码、URL、表格、已有高亮", () => {
   const text = [
     "---",
-    "tags: [CET4]",
+    "tags: [article]",
     "---",
     "beneficial and `const work` and decline.",
     "```js",
@@ -464,6 +493,7 @@ test("编辑视图: buildEditorDecorations 只标记正文生词", () => {
     plugin,
     Symbol("editorInfoField"),
     { class: "mark" },
+    { class: "unknown" },
     FakeBuilder,
   );
 
@@ -471,6 +501,66 @@ test("编辑视图: buildEditorDecorations 只标记正文生词", () => {
   assert.deepEqual(
     ranges.map((range) => text.slice(range.from, range.to)),
     ["beneficial", "people"],
+  );
+});
+
+test("编辑视图: 不理解词使用独立 decoration，并优先于主词条", () => {
+  const text = "hello world and 你好，世界！";
+  class FakeBuilder {
+    constructor() {
+      this.ranges = [];
+    }
+    add(from, to, value) {
+      this.ranges.push({ from, to, value });
+    }
+    finish() {
+      return this.ranges;
+    }
+  }
+
+  const view = {
+    state: {
+      doc: {
+        toString: () => text,
+        sliceString: (from, to) => text.slice(from, to),
+      },
+      field: () => ({
+        file: { path: "notes/test.md", extension: "md" },
+      }),
+    },
+    visibleRanges: [{ from: 0, to: text.length }],
+  };
+
+  const plugin = {
+    settings: {
+      includeCode: false,
+      includeTables: true,
+      skipExistingHighlights: true,
+    },
+    store: { words: new Set(["hello world"]) },
+    unknownStore: { entries: new Set(["hello", "你好，世界！"]) },
+    isWordFile: () => false,
+    isUnknownFile: () => false,
+  };
+
+  const ranges = buildEditorDecorations(
+    view,
+    plugin,
+    Symbol("editorInfoField"),
+    { class: "mark" },
+    { class: "unknown" },
+    FakeBuilder,
+  );
+
+  assert.deepEqual(
+    ranges.map((range) => ({
+      text: text.slice(range.from, range.to),
+      class: range.value.class,
+    })),
+    [
+      { text: "hello", class: "unknown" },
+      { text: "你好，世界！", class: "unknown" },
+    ],
   );
 });
 
@@ -523,6 +613,7 @@ test("编辑视图: 英文短语跨行、中文词语、行内代码跳过", () 
     plugin,
     Symbol("editorInfoField"),
     { class: "mark" },
+    { class: "unknown" },
     FakeBuilder,
   );
 
