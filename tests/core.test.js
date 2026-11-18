@@ -27,6 +27,7 @@ const {
   normalizeUnknownSelection,
   countUnknownLines,
   appendUnknownRecord,
+  removeUnknownRecord,
   parseWordSet,
   serializeWordSet,
   buildWordPatternSource,
@@ -123,6 +124,21 @@ test("不理解词: 追加记录、保留原有内容、精确去重", () => {
     added: false,
   });
   assert.equal(countUnknownLines("a\n\nb\n"), 2);
+});
+
+test("不理解词: 取消收录只删除匹配行", () => {
+  assert.deepEqual(removeUnknownRecord("a\nb\n", "b"), {
+    text: "a\n",
+    removed: true,
+  });
+  assert.deepEqual(removeUnknownRecord("a", "a"), {
+    text: "",
+    removed: true,
+  });
+  assert.deepEqual(removeUnknownRecord("a\nb\n", "c"), {
+    text: "a\nb\n",
+    removed: false,
+  });
 });
 
 test("不理解词: 任意文本可作为高亮条目", () => {

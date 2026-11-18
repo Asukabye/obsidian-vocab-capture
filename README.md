@@ -27,7 +27,7 @@ Obsidian 插件：把选中的英文单词、英文短语或中文词语收录�
 - **阅读视图**：使用 CSS Custom Highlight API，不修改 DOM、不修改 md。
 - **编辑视图**：使用 CodeMirror 6 `Decoration.mark`，覆盖 Live Preview 与 Source 模式。
 - **直接编辑词表**：在 Obsidian 中增删 `生词本.txt` 行，保存后自动重新加载。
-- **不理解词独立收集**：另一个快捷键把任意选中内容追加到独立文件，不做格式校验，使用独立橙色高亮。
+- **不理解词独立收集**：另一个快捷键切换任意选中内容的收录/取消，不做格式校验，使用独立橙色高亮。
 - **零构建**：单个 `main.js`，直接 `require("obsidian")` 与 `require("@codemirror/view")`，无需打包。
 
 ---
@@ -38,7 +38,7 @@ Obsidian 插件：把选中的英文单词、英文短语或中文词语收录�
 
 ### 方式一：Release 安装包
 
-1. 从 [Releases](../../releases) 下载 `vocab-capture-0.5.0.zip`（仓库内 [`dist/vocab-capture-0.5.0.zip`](dist/vocab-capture-0.5.0.zip) 也可直接下载）。
+1. 从 [Releases](../../releases) 下载 `vocab-capture-0.5.1.zip`（仓库内 [`dist/vocab-capture-0.5.1.zip`](dist/vocab-capture-0.5.1.zip) 也可直接下载）。
 2. 解压到：
 
 ```text
@@ -120,7 +120,7 @@ in the long run
 
 ```text
 Alt+W  → 收录/移除“生词本”词条，并高亮
-Alt+Q  → 追加到“不理解的词”文件，不校验格式，橙色高亮
+Alt+Q  → 收录/取消“不理解的词”，不校验格式，橙色高亮
 ```
 
 两类高亮颜色可在设置页分别调整；把条目复制到 `生词本.txt` 可改为主词条颜色。
@@ -164,7 +164,7 @@ Alt+Q  → 追加到“不理解的词”文件，不校验格式，橙色高亮
 | 生词本文件 | `生词本.txt` | 相对 vault 根目录；也可填绝对路径（仅桌面版） |
 | 收录快捷键 | `Alt+W` | 点击“录制”后按新键；支持单键或组合键 |
 | 不理解的词文件 | `不理解的词.txt` | 独立记录文件；橙色高亮 |
-| 不理解词快捷键 | `Alt+Q` | 记录选中内容；不做格式校验 |
+| 不理解词快捷键 | `Alt+Q` | 切换收录/取消；不做格式校验 |
 | 不理解词高亮颜色 | `rgba(236, 144, 56, 0.36)` | 不理解词的独立高亮颜色 |
 | 高亮颜色 | `rgba(64, 190, 160, 0.28)` | 任意 CSS 颜色 |
 | 包含表格 | 开 | 表格中的词条也高亮；关闭后阅读视图和编辑视图都跳过表格行 |
@@ -223,9 +223,9 @@ dist/           可直接安装的 zip
 ## 验证
 
 - `node --check main.js`
-- 纯函数测试：32 项
+- 纯函数测试：33 项
 - jsdom DOM 测试：9 项
-- 插件集成测试：9 项
+- 插件集成测试：10 项
 - Chromium 150 中验证过中文词语、英文短语、跨 `<br>` 高亮
 
 CM6 扩展使用 Obsidian 运行时提供的 `@codemirror/view` / `@codemirror/state`，与 Obsidian 使用同一份 CodeMirror 实例，不重复打包。项目未包含自动化 Obsidian UI 测试；升级 Obsidian 或更换主题后，建议先在目标 vault 做一次手工验收。

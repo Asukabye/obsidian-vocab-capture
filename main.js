@@ -170,6 +170,24 @@ function appendUnknownRecord(existing, entry) {
   };
 }
 
+function removeUnknownRecord(existing, entry) {
+  const current = String(existing == null ? "" : existing);
+  const normalized = normalizeUnknownSelection(entry);
+  if (!normalized) return { text: current, removed: false };
+
+  const lines = current.split(/\r?\n/);
+  const kept = lines.filter(
+    (line) => normalizeUnknownSelection(line) !== normalized,
+  );
+  if (kept.length === lines.length) {
+    return { text: current, removed: false };
+  }
+
+  let text = kept.join("\n");
+  if (text && !text.endsWith("\n")) text += "\n";
+  return { text, removed: true };
+}
+
 function parseWordSet(text) {
   const entries = new Set();
   const clean = String(text == null ? "" : text).replace(/^\uFEFF/, "");
@@ -1030,7 +1048,7 @@ class VocabCapturePlugin extends Plugin {
 
     this.addCommand({
       id: "record-unknown-selection",
-      name: "记录不理解的词/内容",
+      name: "收录/取消不理解内容",
       checkCallback: (checking) => {
         const view = this.app.workspace.getActiveViewOfType(MarkdownView);
         const mode = view ? view.getMode() : null;
@@ -1563,16 +1581,66 @@ class VocabCapturePlugin extends Plugin {
     }
 
     try {
-      const result = await this.appendUnknown(text);
-      if (result.added) {
+      const result = await this.toggleUnknown(text);
+      if (result.removed) {
+        new Notice(
+          `已取消收录该内容 · 剩余 ${result.count} 条`,
+        );
+      } else if (result.added) {
         new Notice(`已记录不理解的内容 · 共 ${result.count} 条`);
       } else {
-        new Notice("该内容已在“不理解的词”文件中");
+        new Notice("不理解词文件没有变化");
       }
     } catch (error) {
-      console.error("[vocab-capture] record unknown failed", error);
-      new Notice(`记录不理解内容失败：${String(error.message || error)}`);
+      console.error("[vocab-capture] toggle unknown failed", error);
+      new Notice(`更新不理解词失败：${String(error.message || error)}`);
     }
+  }
+
+  async toggleUnknown(rawText) {
+    const entry = normalizeUnknownSelection(rawText);
+    if (!entry) return { added: false, removed: false, count: 0 };
+
+    await this.unknownStore.ensureLoaded();
+    const path = this.settings.unknownFilePath;
+    const existing = await this.readTextFile(path);
+    const entries = parseUnknownSet(existing);
+    const exists = entries.has(entry);
+
+    const result = exists
+      ? removeUnknownRecord(existing, entry)
+      : appendUnknownRecord(existing, entry);
+
+    if (!result.removed && !result.added) {
+      return {
+        added: false,
+        removed: false,
+        count: entries.size,
+      };
+    }
+
+    this.unknownStore.saving = true;
+    try {
+      await this.writeTextFile(path, result.text);
+    } finally {
+      this.unknownStore.saving = false;
+    }
+
+    if (exists) {
+      entries.delete(entry);
+    } else {
+      entries.add(entry);
+    }
+    this.unknownStore.entries = entries;
+    this.unknownStore.loadedPath = path;
+    this.bumpWordsVersion();
+    this.scheduleRefresh(0);
+
+    return {
+      added: !exists,
+      removed: exists,
+      count: entries.size,
+    };
   }
 
   async appendUnknown(rawText) {
@@ -1970,7 +2038,7 @@ class VocabCaptureSettingTab extends PluginSettingTab {
 
     containerEl.createEl("h2", { text: "生词捕获" });
     containerEl.createEl("p", {
-      text: "主快捷键收录/移除词条并高亮；另一个快捷键把不理解的内容记录到独立文件，使用橙色高亮，不做格式校验。",
+      text: "主快捷键收录/移除词条并高亮；另一个快捷键收录/取消不理解的内容，使用橙色独立高亮，不做格式校验。",
     });
 
     const count = this.plugin.store ? this.plugin.store.words.size : 0;
@@ -2019,7 +2087,7 @@ class VocabCaptureSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("不理解的词文件")
       .setDesc(
-        "独立于生词本，记录不理解的内容；使用橙色独立高亮，不做格式校验。默认 不理解的词.txt。",
+        "独立于生词本，记录不理解的内容；再次按快捷键取消收录。使用橙色独立高亮，不做格式校验。默认 不理解的词.txt。",
       )
       .addText((text) => {
         text
@@ -2073,7 +2141,7 @@ class VocabCaptureSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("不理解词快捷键")
       .setDesc(
-        "选中内容后记录到独立文件并橙色高亮，不做格式校验。",
+        "选中内容后切换收录/取消；橙色独立高亮，不做格式校验。",
       )
       .addText((text) => {
         text.setValue(formatHotkey(this.plugin.settings.unknownHotkey));
@@ -2306,6 +2374,7 @@ module.exports.__test = {
   countUnknownLines,
   parseUnknownSet,
   appendUnknownRecord,
+  removeUnknownRecord,
   parseWordSet,
   serializeWordSet,
   buildWordPatternSource,

@@ -248,6 +248,35 @@ test("插件: appendUnknown 写入独立文件并去重", async () => {
   assert.equal(duplicate.count, 1);
 });
 
+test("插件: toggleUnknown 同一入口收录与取消收录", async () => {
+  const files = new Map();
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = { unknownFilePath: "unknown.txt" };
+  plugin.readTextFile = async (path) => files.get(path) || "";
+  plugin.writeTextFile = async (path, text) => {
+    files.set(path, text);
+  };
+  plugin.unknownStore = {
+    entries: new Set(),
+    saving: false,
+    loadedPath: "unknown.txt",
+    ensureLoaded: async () => {},
+  };
+  plugin.bumpWordsVersion = () => {};
+  plugin.scheduleRefresh = () => {};
+
+  const added = await plugin.toggleUnknown("Hello\nWorld");
+  assert.equal(added.added, true);
+  assert.equal(added.removed, false);
+  assert.equal(files.get("unknown.txt"), "Hello World\n");
+
+  const removed = await plugin.toggleUnknown("Hello World");
+  assert.equal(removed.added, false);
+  assert.equal(removed.removed, true);
+  assert.equal(files.get("unknown.txt"), "");
+  assert.equal(removed.count, 0);
+});
+
 test("插件: 旧设置加载后补齐不理解词默认值", async () => {
   const plugin = Object.create(PluginClass.prototype);
   plugin.loadData = async () => ({
