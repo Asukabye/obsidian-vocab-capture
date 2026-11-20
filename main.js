@@ -17,6 +17,7 @@ const DEFAULT_SETTINGS = {
   wordFilePath: "生词本.txt",
   hotkey: { modifiers: ["Alt"], key: "W" },
   unknownFilePath: "不理解的词.txt",
+  unknownNotePath: "不理解的词.md",
   unknownHotkey: { modifiers: ["Alt"], key: "Q" },
   highlightColor: "rgba(64, 190, 160, 0.28)",
   unknownHighlightColor: "rgba(236, 144, 56, 0.36)",
@@ -186,6 +187,116 @@ function removeUnknownRecord(existing, entry) {
   let text = kept.join("\n");
   if (text && !text.endsWith("\n")) text += "\n";
   return { text, removed: true };
+}
+
+function normalizeUnknownKey(value) {
+  return normalizeUnknownSelection(value)
+    .toLocaleLowerCase()
+    .replace(/[’‘`´]/g, "'")
+    .replace(/[‐‑–—]/g, "-");
+}
+
+function findUnknownEntryForText(text, entries) {
+  const key = normalizeUnknownKey(text);
+  if (!key) return null;
+  for (const entry of entries || []) {
+    if (normalizeUnknownKey(entry) === key) return entry;
+  }
+
+  const compact = key.replace(/\s+/g, "");
+  if (!compact) return null;
+  for (const entry of entries || []) {
+    if (normalizeUnknownKey(entry).replace(/\s+/g, "") === compact) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+function findUnknownEntryAtOffset(text, offset, entries) {
+  const regex = buildUnknownRegex(entries);
+  if (!regex || !text) return null;
+
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const from = match.index;
+    const to = from + match[0].length;
+    if (offset >= from && offset <= to) {
+      return findUnknownEntryForText(match[0], entries);
+    }
+    if (from > offset) break;
+  }
+  return null;
+}
+
+function extractHeadingTexts(text) {
+  const headings = new Set();
+  for (const line of String(text == null ? "" : text).split(
+    /\r\n|\n|\r/,
+  )) {
+    const match = /^#{1,6}[ \t]+(.+?)[ \t]*$/.exec(line);
+    if (match) headings.add(match[1].trim());
+  }
+  return headings;
+}
+
+function ensureUnknownHeadingsText(existing, entries) {
+  const current = String(existing == null ? "" : existing);
+  const unique = Array.from(
+    new Set(
+      Array.from(entries || [], (entry) =>
+        normalizeUnknownSelection(String(entry)),
+      ).filter(Boolean),
+    ),
+  );
+  if (!unique.length) return { text: current, changed: false };
+
+  const headings = extractHeadingTexts(current);
+  const missing = unique.filter((entry) => !headings.has(entry));
+  if (!missing.length) return { text: current, changed: false };
+
+  let text = current;
+  if (!text.trim()) {
+    text = "# 不理解的词\n";
+  }
+
+  for (const entry of missing) {
+    if (text && !text.endsWith("\n")) text += "\n";
+    if (!text.endsWith("\n\n")) text += "\n";
+    text += `## ${entry}\n`;
+  }
+
+  return { text, changed: true };
+}
+
+function findHeadingLine(text, heading) {
+  const target = normalizeUnknownSelection(heading);
+  if (!target) return -1;
+  const lines = String(text == null ? "" : text).split(/\r\n|\n|\r/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^#{1,6}[ \t]+(.+?)[ \t]*$/.exec(lines[index]);
+    if (match && match[1].trim() === target) return index;
+  }
+  return -1;
+}
+
+function getCaretRangeFromEvent(event) {
+  if (typeof document === "undefined") return null;
+  if (typeof document.caretRangeFromPoint === "function") {
+    return document.caretRangeFromPoint(event.clientX, event.clientY);
+  }
+  if (typeof document.caretPositionFromPoint === "function") {
+    const position = document.caretPositionFromPoint(
+      event.clientX,
+      event.clientY,
+    );
+    if (!position) return null;
+    const range = document.createRange();
+    range.setStart(position.offsetNode, position.offset);
+    range.collapse(true);
+    return range;
+  }
+  return null;
 }
 
 function parseWordSet(text) {
@@ -840,6 +951,42 @@ function createEditorHighlightExtension(plugin, editorApi) {
         this.version = plugin.wordsVersion;
         this.editorView = view;
         this.decorations = safeBuild(view);
+
+        this.clickHandler = (event) => {
+          if (event.defaultPrevented || event.button !== 0) return;
+          if (
+            event.metaKey ||
+            event.ctrlKey ||
+            event.shiftKey ||
+            event.altKey
+          ) {
+            return;
+          }
+          if (!view.state.selection.main.empty) return;
+          if (!plugin.unknownStore || !plugin.unknownStore.entries.size) {
+            return;
+          }
+          if (event.target && event.target.closest("a")) return;
+
+          const position = view.posAtCoords({
+            x: event.clientX,
+            y: event.clientY,
+          });
+          if (position == null) return;
+
+          const entry = findUnknownEntryAtOffset(
+            view.state.doc.toString(),
+            position,
+            plugin.unknownStore.entries,
+          );
+          if (!entry) return;
+
+          event.preventDefault();
+          event.stopPropagation();
+          void plugin.openUnknownEntry(entry);
+        };
+        view.dom.addEventListener("click", this.clickHandler);
+
         if (plugin.editorViews) {
           plugin.editorViews.add(view);
         }
@@ -857,6 +1004,10 @@ function createEditorHighlightExtension(plugin, editorApi) {
       }
 
       destroy() {
+        this.editorView.dom.removeEventListener(
+          "click",
+          this.clickHandler,
+        );
         if (plugin.editorViews) {
           plugin.editorViews.delete(this.editorView);
         }
@@ -985,6 +1136,8 @@ class VocabCapturePlugin extends Plugin {
     this.recordingCleanup = null;
     this.currentHighlight = null;
     this.currentUnknownHighlight = null;
+    this.unknownLinkRanges = [];
+    this.unknownHoverTarget = null;
     this.wordsVersion = 0;
     this.editorApi = null;
     this.editorRefreshEffect = null;
@@ -1014,6 +1167,7 @@ class VocabCapturePlugin extends Plugin {
     this.unknownStore = new UnknownStore(this);
     try {
       await this.unknownStore.load();
+      await this.ensureUnknownHeadings(this.unknownStore.entries, false);
     } catch (error) {
       console.error("[vocab-capture] load unknown list failed", error);
       new Notice(`读取不理解词文件失败：${String(error.message || error)}`);
@@ -1069,6 +1223,14 @@ class VocabCapturePlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "open-unknown-note",
+      name: "打开不理解词笔记",
+      callback: () => {
+        void this.openUnknownNote();
+      },
+    });
+
+    this.addCommand({
       id: "open-word-list",
       name: "打开生词本",
       callback: () => {
@@ -1096,6 +1258,19 @@ class VocabCapturePlugin extends Plugin {
     document.addEventListener("keydown", onKeyDown, true);
     this.register(() =>
       document.removeEventListener("keydown", onKeyDown, true),
+    );
+
+    const onClick = (event) => this.handleReadingUnknownClick(event);
+    document.addEventListener("click", onClick, true);
+    this.register(() =>
+      document.removeEventListener("click", onClick, true),
+    );
+
+    const onMouseMove = (event) =>
+      this.handleReadingUnknownMouseMove(event);
+    document.addEventListener("mousemove", onMouseMove, true);
+    this.register(() =>
+      document.removeEventListener("mousemove", onMouseMove, true),
     );
 
     this.registerEvent(
@@ -1312,6 +1487,9 @@ class VocabCapturePlugin extends Plugin {
     this.settings.unknownFilePath =
       String(this.settings.unknownFilePath || "").trim() ||
       DEFAULT_SETTINGS.unknownFilePath;
+    this.settings.unknownNotePath =
+      String(this.settings.unknownNotePath || "").trim() ||
+      DEFAULT_SETTINGS.unknownNotePath;
     this.settings.highlightColor =
       String(this.settings.highlightColor || "").trim() ||
       DEFAULT_SETTINGS.highlightColor;
@@ -1633,6 +1811,9 @@ class VocabCapturePlugin extends Plugin {
     }
     this.unknownStore.entries = entries;
     this.unknownStore.loadedPath = path;
+    if (!exists) {
+      await this.ensureUnknownHeadings(entries, true);
+    }
     this.bumpWordsVersion();
     this.scheduleRefresh(0);
 
@@ -1664,6 +1845,7 @@ class VocabCapturePlugin extends Plugin {
 
     this.unknownStore.entries.add(entry);
     this.unknownStore.loadedPath = path;
+    await this.ensureUnknownHeadings(this.unknownStore.entries, true);
     this.bumpWordsVersion();
     this.scheduleRefresh(0);
 
@@ -1673,6 +1855,190 @@ class VocabCapturePlugin extends Plugin {
   async countUnknown() {
     await this.unknownStore.ensureLoaded();
     return this.unknownStore.entries.size;
+  }
+
+  async ensureUnknownHeadings(entries, showNotice = false) {
+    const list = Array.from(entries || [])
+      .map((entry) => normalizeUnknownSelection(String(entry)))
+      .filter(Boolean);
+    if (!list.length) return false;
+
+    const rawPath = String(this.settings.unknownNotePath || "").trim();
+    if (!rawPath) {
+      if (showNotice) {
+        new Notice("请先在插件设置中填写“不理解词笔记”路径");
+      }
+      return false;
+    }
+    if (isAbsolutePath(rawPath)) {
+      if (showNotice) {
+        new Notice("“不理解词笔记”必须是 vault 内的 Markdown 文件");
+      }
+      return false;
+    }
+
+    try {
+      const existing = await this.readTextFile(rawPath);
+      const result = ensureUnknownHeadingsText(existing, list);
+      if (result.changed) {
+        await this.writeTextFile(rawPath, result.text);
+      }
+      return result.changed;
+    } catch (error) {
+      console.error("[vocab-capture] ensure unknown headings failed", error);
+      if (showNotice) {
+        new Notice(`生成不理解词标题失败：${String(error.message || error)}`);
+      }
+      return false;
+    }
+  }
+
+  async findUnknownHeadingLine(entry) {
+    const rawPath = String(this.settings.unknownNotePath || "").trim();
+    if (!rawPath || isAbsolutePath(rawPath)) return -1;
+    const text = await this.readTextFile(rawPath);
+    return findHeadingLine(text, entry);
+  }
+
+  async openUnknownEntry(entry) {
+    const normalized = normalizeUnknownSelection(entry);
+    if (!normalized) return;
+
+    try {
+      await this.ensureUnknownHeadings(this.unknownStore.entries, false);
+      const rawPath = String(this.settings.unknownNotePath || "").trim();
+      if (!rawPath) {
+        new Notice("请先在插件设置中填写“不理解词笔记”路径");
+        return;
+      }
+      if (isAbsolutePath(rawPath)) {
+        new Notice("“不理解词笔记”必须是 vault 内的 Markdown 文件");
+        return;
+      }
+
+      const notePath = normalizeVaultPath(rawPath);
+      const line = await this.findUnknownHeadingLine(normalized);
+      await this.app.workspace.openLinkText(notePath, "", false);
+      if (line >= 0) {
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (view && typeof view.setEphemeralState === "function") {
+          view.setEphemeralState({ line });
+        }
+      }
+    } catch (error) {
+      new Notice(`打开不理解词笔记失败：${String(error.message || error)}`);
+    }
+  }
+
+  async openUnknownNote() {
+    await this.ensureUnknownHeadings(this.unknownStore.entries, true);
+    const rawPath = String(this.settings.unknownNotePath || "").trim();
+    if (!rawPath) {
+      new Notice("请先在插件设置中填写“不理解词笔记”路径");
+      return;
+    }
+    if (isAbsolutePath(rawPath)) {
+      new Notice("“不理解词笔记”必须是 vault 内的 Markdown 文件");
+      return;
+    }
+
+    try {
+      const notePath = normalizeVaultPath(rawPath);
+      await this.app.workspace.openLinkText(notePath, "", false);
+    } catch (error) {
+      new Notice(`打开不理解词笔记失败：${String(error.message || error)}`);
+    }
+  }
+
+  findUnknownLinkAtPoint(event) {
+    if (!this.unknownLinkRanges || !this.unknownLinkRanges.length) {
+      return null;
+    }
+    const caret = getCaretRangeFromEvent(event);
+    if (!caret) return null;
+
+    for (const item of this.unknownLinkRanges) {
+      const range = item.range;
+      if (!range || !range.startContainer || !range.startContainer.isConnected) {
+        continue;
+      }
+      try {
+        if (
+          range.isPointInRange(
+            caret.startContainer,
+            caret.startOffset,
+          )
+        ) {
+          return item;
+        }
+      } catch (error) {
+        // Range 所在 DOM 已被替换时忽略。
+      }
+    }
+    return null;
+  }
+
+  handleReadingUnknownClick(event) {
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    if (document.querySelector(".modal-container, .prompt")) return;
+
+    const target = event.target;
+    if (!target || typeof target.closest !== "function") return;
+    const preview = target.closest(".markdown-preview-view");
+    if (!preview || target.closest("a")) return;
+
+    const selection =
+      typeof window !== "undefined" ? window.getSelection() : null;
+    if (selection && !selection.isCollapsed) return;
+
+    const hit = this.findUnknownLinkAtPoint(event);
+    if (!hit) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    void this.openUnknownEntry(hit.entry);
+  }
+
+  handleReadingUnknownMouseMove(event) {
+    if (!this.unknownLinkRanges || !this.unknownLinkRanges.length) {
+      this.clearUnknownHover();
+      return;
+    }
+
+    const target = event.target;
+    if (!target || typeof target.closest !== "function") {
+      this.clearUnknownHover();
+      return;
+    }
+    const preview = target.closest(".markdown-preview-view");
+    if (!preview) {
+      this.clearUnknownHover();
+      return;
+    }
+
+    const hit = this.findUnknownLinkAtPoint(event);
+    if (!hit) {
+      this.clearUnknownHover();
+      return;
+    }
+
+    if (this.unknownHoverTarget !== preview) {
+      this.clearUnknownHover();
+      this.unknownHoverTarget = preview;
+    }
+    preview.classList.add("vocab-capture-unknown-link-hover");
+  }
+
+  clearUnknownHover() {
+    if (this.unknownHoverTarget) {
+      this.unknownHoverTarget.classList.remove(
+        "vocab-capture-unknown-link-hover",
+      );
+      this.unknownHoverTarget = null;
+    }
   }
 
   async openUnknownFile() {
@@ -1847,6 +2213,7 @@ class VocabCapturePlugin extends Plugin {
   async reloadUnknownStore(showNotice = false) {
     try {
       await this.unknownStore.load();
+      await this.ensureUnknownHeadings(this.unknownStore.entries, showNotice);
       this.bumpWordsVersion();
       this.scheduleRefresh(0);
       return true;
@@ -1932,6 +2299,7 @@ class VocabCapturePlugin extends Plugin {
 
     const mainRanges = [];
     const unknownRanges = [];
+    const unknownLinkRanges = [];
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
       if (!(view instanceof MarkdownView)) continue;
@@ -1957,12 +2325,20 @@ class VocabCapturePlugin extends Plugin {
         mainRanges.push(...collectRanges(preview, mainRegex, rangeOptions));
       }
       if (unknownRegex) {
-        unknownRanges.push(
-          ...collectRanges(preview, unknownRegex, rangeOptions),
-        );
+        const ranges = collectRanges(preview, unknownRegex, rangeOptions);
+        unknownRanges.push(...ranges);
+        for (const range of ranges) {
+          const entry = findUnknownEntryForText(
+            range.toString(),
+            unknownEntries,
+          );
+          if (entry) unknownLinkRanges.push({ range, entry });
+        }
       }
     }
 
+    this.clearUnknownHover();
+    this.unknownLinkRanges = unknownLinkRanges;
     this.currentHighlight = this.setHighlight(
       getHighlightName(),
       mainRanges,
@@ -2003,6 +2379,8 @@ class VocabCapturePlugin extends Plugin {
   clearHighlights() {
     this.currentHighlight = null;
     this.currentUnknownHighlight = null;
+    this.unknownLinkRanges = [];
+    this.clearUnknownHover();
     if (
       typeof window === "undefined" ||
       !window.CSS ||
@@ -2030,6 +2408,7 @@ class VocabCaptureSettingTab extends PluginSettingTab {
     this.plugin = plugin;
     this.pathTimer = null;
     this.unknownPathTimer = null;
+    this.unknownNoteTimer = null;
   }
 
   display() {
@@ -2038,7 +2417,7 @@ class VocabCaptureSettingTab extends PluginSettingTab {
 
     containerEl.createEl("h2", { text: "生词捕获" });
     containerEl.createEl("p", {
-      text: "主快捷键收录/移除词条并高亮；另一个快捷键收录/取消不理解的内容，使用橙色独立高亮，不做格式校验。",
+      text: "主快捷键收录/移除词条并高亮；另一个快捷键收录/取消不理解的内容，使用橙色独立高亮并链接到笔记标题，不做格式校验。",
     });
 
     const count = this.plugin.store ? this.plugin.store.words.size : 0;
@@ -2104,6 +2483,33 @@ class VocabCaptureSettingTab extends PluginSettingTab {
             this.unknownPathTimer = window.setTimeout(() => {
               this.unknownPathTimer = null;
               void this.plugin.reloadUnknownStore(true);
+            }, 600);
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("不理解词笔记")
+      .setDesc(
+        "vault 内的 Markdown 文件。每条不理解词会生成同名标题，点击正文中的不理解词跳转到对应标题。",
+      )
+      .addText((text) => {
+        text
+          .setPlaceholder(DEFAULT_SETTINGS.unknownNotePath)
+          .setValue(this.plugin.settings.unknownNotePath)
+          .onChange((value) => {
+            this.plugin.settings.unknownNotePath =
+              value.trim() || DEFAULT_SETTINGS.unknownNotePath;
+            void this.plugin.saveSettings();
+
+            if (this.unknownNoteTimer) {
+              window.clearTimeout(this.unknownNoteTimer);
+            }
+            this.unknownNoteTimer = window.setTimeout(() => {
+              this.unknownNoteTimer = null;
+              void this.plugin.ensureUnknownHeadings(
+                this.plugin.unknownStore.entries,
+                true,
+              );
             }, 600);
           });
       });
@@ -2277,6 +2683,11 @@ class VocabCaptureSettingTab extends PluginSettingTab {
         button.setButtonText("打开不理解词文件").onClick(() => {
           void this.plugin.openUnknownFile();
         });
+      })
+      .addButton((button) => {
+        button.setButtonText("打开不理解词笔记").onClick(() => {
+          void this.plugin.openUnknownNote();
+        });
       });
   }
 
@@ -2288,6 +2699,10 @@ class VocabCaptureSettingTab extends PluginSettingTab {
     if (this.unknownPathTimer) {
       window.clearTimeout(this.unknownPathTimer);
       this.unknownPathTimer = null;
+    }
+    if (this.unknownNoteTimer) {
+      window.clearTimeout(this.unknownNoteTimer);
+      this.unknownNoteTimer = null;
     }
     if (this.plugin.recording && this.plugin.recordingCleanup) {
       this.plugin.recordingCleanup();
@@ -2375,6 +2790,10 @@ module.exports.__test = {
   parseUnknownSet,
   appendUnknownRecord,
   removeUnknownRecord,
+  ensureUnknownHeadingsText,
+  findHeadingLine,
+  findUnknownEntryForText,
+  findUnknownEntryAtOffset,
   parseWordSet,
   serializeWordSet,
   buildWordPatternSource,

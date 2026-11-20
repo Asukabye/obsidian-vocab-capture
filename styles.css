@@ -13,7 +13,12 @@
   background-color: var(--vocab-capture-unknown-highlight-color, rgba(236, 144, 56, 0.36));
   color: inherit;
   border-radius: 2px;
+  cursor: pointer;
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
+}
+
+.vocab-capture-unknown-link-hover {
+  cursor: pointer;
 }

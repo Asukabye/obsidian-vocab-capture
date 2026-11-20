@@ -1,9 +1,9 @@
 {
   "id": "vocab-capture",
   "name": "生词捕获",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "minAppVersion": "1.5.0",
-  "description": "在阅读/编辑视图中收录并高亮词条；另设快捷键切换不理解内容的收录/取消，使用独立高亮。",
+  "description": "在阅读/编辑视图中收录并高亮词条；不理解词使用独立高亮并链接到笔记标题。",
   "author": "DeepSeek Harness",
   "isDesktopOnly": false
 }

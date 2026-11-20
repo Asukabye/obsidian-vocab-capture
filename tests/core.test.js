@@ -28,6 +28,10 @@ const {
   countUnknownLines,
   appendUnknownRecord,
   removeUnknownRecord,
+  ensureUnknownHeadingsText,
+  findHeadingLine,
+  findUnknownEntryForText,
+  findUnknownEntryAtOffset,
   parseWordSet,
   serializeWordSet,
   buildWordPatternSource,
@@ -139,6 +143,61 @@ test("不理解词: 取消收录只删除匹配行", () => {
     text: "a\nb\n",
     removed: false,
   });
+});
+
+test("不理解词笔记: 为缺失词条生成标题且不重复", () => {
+  const first = ensureUnknownHeadingsText("", ["hello", "world"]);
+  assert.equal(first.changed, true);
+  assert.equal(
+    first.text,
+    "# 不理解的词\n\n## hello\n\n## world\n",
+  );
+  assert.equal(first.text.includes("## hello"), true);
+  assert.equal(first.text.includes("## world"), true);
+
+  const second = ensureUnknownHeadingsText(first.text, [
+    "hello",
+    "world",
+  ]);
+  assert.equal(second.changed, false);
+  assert.equal(second.text, first.text);
+
+  const third = ensureUnknownHeadingsText("原有内容\n\n## hello\n", [
+    "hello",
+    "新词",
+  ]);
+  assert.equal(third.changed, true);
+  assert.ok(third.text.startsWith("原有内容\n\n## hello\n"));
+  assert.ok(third.text.includes("## 新词"));
+  assert.equal(findHeadingLine(third.text, "新词"), 4);
+});
+
+test("不理解词链接: 根据文本或偏移定位词条", () => {
+  const entries = new Set(["Hello World", "你好，世界！"]);
+  assert.equal(
+    findUnknownEntryForText("hello   world", entries),
+    "Hello World",
+  );
+  assert.equal(
+    findUnknownEntryForText("你好，世界！", entries),
+    "你好，世界！",
+  );
+  assert.equal(findUnknownEntryForText("other", entries), null);
+  assert.equal(
+    findUnknownEntryForText("helloworld", entries),
+    "Hello World",
+  );
+
+  const text = "Say hello world and 你好，世界！";
+  assert.equal(
+    findUnknownEntryAtOffset(text, text.indexOf("world"), entries),
+    "Hello World",
+  );
+  assert.equal(
+    findUnknownEntryAtOffset(text, text.indexOf("你好"), entries),
+    "你好，世界！",
+  );
+  assert.equal(findUnknownEntryAtOffset(text, 0, entries), null);
 });
 
 test("不理解词: 任意文本可作为高亮条目", () => {

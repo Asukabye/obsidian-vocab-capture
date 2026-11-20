@@ -174,6 +174,8 @@ test("插件: 不理解词使用独立高亮注册名", () => {
   assert.ok(
     highlight.ranges.some((range) => range.toString() === "beneficial"),
   );
+  assert.ok(plugin.unknownLinkRanges.length >= 1);
+  assert.equal(plugin.unknownLinkRanges[0].entry, "beneficial");
 });
 
 test("插件: 两种高亮颜色写入 CSS 变量", () => {
@@ -236,6 +238,7 @@ test("插件: appendUnknown 写入独立文件并去重", async () => {
     loadedPath: "unknown.txt",
     ensureLoaded: async () => {},
   };
+  plugin.ensureUnknownHeadings = async () => {};
   plugin.bumpWordsVersion = () => {};
   plugin.scheduleRefresh = () => {};
 
@@ -262,6 +265,7 @@ test("插件: toggleUnknown 同一入口收录与取消收录", async () => {
     loadedPath: "unknown.txt",
     ensureLoaded: async () => {},
   };
+  plugin.ensureUnknownHeadings = async () => {};
   plugin.bumpWordsVersion = () => {};
   plugin.scheduleRefresh = () => {};
 
@@ -277,6 +281,128 @@ test("插件: toggleUnknown 同一入口收录与取消收录", async () => {
   assert.equal(removed.count, 0);
 });
 
+test("插件: ensureUnknownHeadings 创建并复用笔记标题", async () => {
+  const files = new Map();
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = { unknownNotePath: "notes/unknown.md" };
+  plugin.readTextFile = async (path) => files.get(path) || "";
+  plugin.writeTextFile = async (path, text) => {
+    files.set(path, text);
+  };
+
+  const changed = await plugin.ensureUnknownHeadings(
+    new Set(["hello", "world"]),
+  );
+  assert.equal(changed, true);
+  assert.equal(
+    files.get("notes/unknown.md"),
+    "# 不理解的词\n\n## hello\n\n## world\n",
+  );
+
+  const unchanged = await plugin.ensureUnknownHeadings(
+    new Set(["hello", "world"]),
+  );
+  assert.equal(unchanged, false);
+});
+
+test("插件: 点击阅读视图中的不理解词触发跳转", () => {
+  const { dom, plugin } = setup();
+  plugin.store.words = new Set();
+  plugin.unknownStore = { entries: new Set(["beneficial"]) };
+  plugin.refreshHighlights();
+
+  const strong = dom.window.document.querySelector("p strong");
+  const caret = dom.window.document.createRange();
+  caret.setStart(strong.firstChild, 2);
+  caret.collapse(true);
+  dom.window.document.caretRangeFromPoint = () => caret;
+
+  let opened = null;
+  plugin.openUnknownEntry = async (entry) => {
+    opened = entry;
+  };
+
+  let prevented = false;
+  plugin.handleReadingUnknownClick({
+    defaultPrevented: false,
+    button: 0,
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    target: strong,
+    preventDefault: () => {
+      prevented = true;
+    },
+    stopPropagation: () => {},
+  });
+
+  assert.equal(prevented, true);
+  assert.equal(opened, "beneficial");
+});
+
+test("插件: 取消不理解词不删除笔记中的标题内容", async () => {
+  const files = new Map();
+  files.set("unknown.txt", "hello\n");
+  files.set("note.md", "# 不理解的词\n\n## hello\n\n这里是用户写的解释。\n");
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    unknownFilePath: "unknown.txt",
+    unknownNotePath: "note.md",
+  };
+  plugin.readTextFile = async (path) => files.get(path) || "";
+  plugin.writeTextFile = async (path, text) => {
+    files.set(path, text);
+  };
+  plugin.unknownStore = {
+    entries: new Set(["hello"]),
+    saving: false,
+    loadedPath: "unknown.txt",
+    ensureLoaded: async () => {},
+  };
+  plugin.bumpWordsVersion = () => {};
+  plugin.scheduleRefresh = () => {};
+
+  const result = await plugin.toggleUnknown("hello");
+  assert.equal(result.removed, true);
+  assert.equal(files.get("unknown.txt"), "");
+  assert.equal(
+    files.get("note.md"),
+    "# 不理解的词\n\n## hello\n\n这里是用户写的解释。\n",
+  );
+});
+
+test("插件: openUnknownEntry 打开笔记并定位标题行", async () => {
+  const files = new Map();
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = { unknownNotePath: "note.md" };
+  plugin.unknownStore = { entries: new Set(["hello"]) };
+  plugin.readTextFile = async (path) => files.get(path) || "";
+  plugin.writeTextFile = async (path, text) => {
+    files.set(path, text);
+  };
+
+  let opened = null;
+  let state = null;
+  plugin.app = {
+    workspace: {
+      openLinkText: async (path) => {
+        opened = path;
+      },
+      getActiveViewOfType: () => ({
+        setEphemeralState: (value) => {
+          state = value;
+        },
+      }),
+    },
+  };
+
+  await plugin.openUnknownEntry("hello");
+  assert.equal(opened, "note.md");
+  assert.equal(files.get("note.md"), "# 不理解的词\n\n## hello\n");
+  assert.deepEqual(state, { line: 2 });
+});
+
 test("插件: 旧设置加载后补齐不理解词默认值", async () => {
   const plugin = Object.create(PluginClass.prototype);
   plugin.loadData = async () => ({
@@ -286,6 +412,7 @@ test("插件: 旧设置加载后补齐不理解词默认值", async () => {
   await plugin.loadSettings();
 
   assert.equal(plugin.settings.unknownFilePath, "不理解的词.txt");
+  assert.equal(plugin.settings.unknownNotePath, "不理解的词.md");
   assert.equal(plugin.settings.unknownHotkey.key, "Q");
   assert.deepEqual(plugin.settings.unknownHotkey.modifiers, ["Alt"]);
 });
