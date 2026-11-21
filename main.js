@@ -229,15 +229,212 @@ function findUnknownEntryAtOffset(text, offset, entries) {
   return null;
 }
 
-function extractHeadingTexts(text) {
-  const headings = new Set();
-  for (const line of String(text == null ? "" : text).split(
-    /\r\n|\n|\r/,
-  )) {
-    const match = /^#{1,6}[ \t]+(.+?)[ \t]*$/.exec(line);
-    if (match) headings.add(match[1].trim());
+function normalizeCategoryName(value) {
+  return String(value == null ? "" : value)
+    .replace(/\r\n?|\n/g, " ")
+    .replace(/^#+\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseUnknownNote(text) {
+  const source = String(text == null ? "" : text);
+  const lines = source.split(/\r?\n/);
+  const categories = [];
+  const cards = [];
+  let currentCategory = null;
+  let inFence = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+
+    const h1 = /^#\s+(.+?)\s*$/.exec(line);
+    if (h1) {
+      currentCategory = {
+        name: h1[1].trim(),
+        start: index,
+        end: lines.length,
+        cards: [],
+      };
+      categories.push(currentCategory);
+      continue;
+    }
+
+    const h2 = /^##\s+(.+?)\s*$/.exec(line);
+    if (h2 && currentCategory) {
+      const card = {
+        name: h2[1].trim(),
+        start: index,
+        end: lines.length,
+        category: currentCategory.name,
+      };
+      currentCategory.cards.push(card);
+      cards.push(card);
+    }
   }
-  return headings;
+
+  for (let index = 0; index < categories.length; index += 1) {
+    const category = categories[index];
+    if (index + 1 < categories.length) {
+      category.end = categories[index + 1].start;
+    }
+    for (let cardIndex = 0; cardIndex < category.cards.length; cardIndex += 1) {
+      const card = category.cards[cardIndex];
+      const next =
+        cardIndex + 1 < category.cards.length
+          ? category.cards[cardIndex + 1].start
+          : category.end;
+      card.end = next;
+    }
+  }
+
+  return { text: source, lines, categories, cards };
+}
+
+function ensureTrailingNewline(text) {
+  const cleaned = String(text == null ? "" : text).replace(/\n+$/, "");
+  return cleaned ? `${cleaned}\n` : "";
+}
+
+function addUnknownCategoryText(text, name) {
+  const current = String(text == null ? "" : text);
+  const category = normalizeCategoryName(name);
+  if (!category) return { text: current, changed: false };
+
+  const parsed = parseUnknownNote(current);
+  if (parsed.categories.some((item) => item.name === category)) {
+    return { text: current, changed: false };
+  }
+
+  const lines = current.split(/\r?\n/);
+  const uncategorized = parsed.categories.find(
+    (item) => item.name === "未分类",
+  );
+  const at = uncategorized ? uncategorized.start : lines.length;
+  const block = [];
+  if (at > 0 && lines[at - 1].trim()) block.push("");
+  block.push(`# ${category}`, "");
+
+  lines.splice(at, 0, ...block);
+  return { text: ensureTrailingNewline(lines.join("\n")), changed: true };
+}
+
+function deleteUnknownCategoryText(text, name) {
+  const current = String(text == null ? "" : text);
+  const categoryName = normalizeCategoryName(name);
+  if (!categoryName || categoryName === "未分类") {
+    return { text: current, changed: false, movedCards: 0 };
+  }
+
+  const parsed = parseUnknownNote(current);
+  const target = parsed.categories.find(
+    (item) => item.name === categoryName,
+  );
+  if (!target) return { text: current, changed: false, movedCards: 0 };
+
+  const lines = current.split(/\r?\n/);
+  const uncategorized = parsed.categories.find(
+    (item) => item.name === "未分类",
+  );
+
+  if (!uncategorized) {
+    lines[target.start] = "# 未分类";
+    return {
+      text: ensureTrailingNewline(lines.join("\n")),
+      changed: true,
+      movedCards: target.cards.length,
+    };
+  }
+
+  const body = lines.slice(target.start + 1, target.end);
+  lines.splice(target.start, target.end - target.start);
+  let remaining = ensureTrailingNewline(lines.join("\n"));
+  const nextParsed = parseUnknownNote(remaining);
+  const nextUncategorized = nextParsed.categories.find(
+    (item) => item.name === "未分类",
+  );
+
+  if (!nextUncategorized) {
+    return { text: current, changed: false, movedCards: 0 };
+  }
+
+  const nextLines = remaining.split(/\r?\n/);
+  const block = body.slice();
+  const at = nextUncategorized.end;
+  if (
+    block.length &&
+    at > 0 &&
+    nextLines[at - 1] &&
+    nextLines[at - 1].trim() &&
+    block[0].trim()
+  ) {
+    block.unshift("");
+  }
+  if (block.length && !block[block.length - 1].trim()) {
+    // 保留原有结尾空行。
+  } else if (block.length) {
+    block.push("");
+  }
+
+  nextLines.splice(at, 0, ...block);
+  remaining = ensureTrailingNewline(nextLines.join("\n"));
+  return {
+    text: remaining,
+    changed: true,
+    movedCards: target.cards.length,
+  };
+}
+
+function moveUnknownCardText(text, cardName, targetCategory) {
+  const current = String(text == null ? "" : text);
+  const name = normalizeUnknownSelection(cardName);
+  const targetName = normalizeCategoryName(targetCategory);
+  if (!name || !targetName) return { text: current, changed: false };
+
+  const parsed = parseUnknownNote(current);
+  const card = parsed.cards.find((item) => item.name === name);
+  const target = parsed.categories.find(
+    (item) => item.name === targetName,
+  );
+  if (!card || !target || card.category === targetName) {
+    return { text: current, changed: false };
+  }
+
+  const lines = current.split(/\r?\n/);
+  const block = lines.slice(card.start, card.end);
+  lines.splice(card.start, card.end - card.start);
+  let remaining = ensureTrailingNewline(lines.join("\n"));
+
+  const nextParsed = parseUnknownNote(remaining);
+  const nextTarget = nextParsed.categories.find(
+    (item) => item.name === targetName,
+  );
+  if (!nextTarget) return { text: current, changed: false };
+
+  const nextLines = remaining.split(/\r?\n/);
+  const at = nextTarget.end;
+  const insert = block.slice();
+  if (
+    insert.length &&
+    at > 0 &&
+    nextLines[at - 1] &&
+    nextLines[at - 1].trim() &&
+    insert[0].trim()
+  ) {
+    insert.unshift("");
+  }
+  if (insert.length && insert[insert.length - 1].trim()) {
+    insert.push("");
+  }
+
+  nextLines.splice(at, 0, ...insert);
+  remaining = ensureTrailingNewline(nextLines.join("\n"));
+  return { text: remaining, changed: true };
 }
 
 function ensureUnknownHeadingsText(existing, entries) {
@@ -251,22 +448,60 @@ function ensureUnknownHeadingsText(existing, entries) {
   );
   if (!unique.length) return { text: current, changed: false };
 
-  const headings = extractHeadingTexts(current);
-  const missing = unique.filter((entry) => !headings.has(entry));
-  if (!missing.length) return { text: current, changed: false };
-
   let text = current;
-  if (!text.trim()) {
-    text = "# 不理解的词\n";
+  let parsed = parseUnknownNote(text);
+
+  if (
+    parsed.categories.length === 1 &&
+    parsed.categories[0].name === "不理解的词"
+  ) {
+    const lines = text.split(/\r?\n/);
+    lines[parsed.categories[0].start] = "# 未分类";
+    text = ensureTrailingNewline(lines.join("\n"));
+    parsed = parseUnknownNote(text);
   }
 
+  if (!parsed.categories.length) {
+    const body = text
+      .replace(/^\uFEFF/, "")
+      .replace(/^\n+/, "");
+    text = body
+      ? `# 未分类\n\n${body}`
+      : "# 未分类\n";
+    text = ensureTrailingNewline(text);
+    parsed = parseUnknownNote(text);
+  } else if (!parsed.categories.some((item) => item.name === "未分类")) {
+    text = addUnknownCategoryText(text, "未分类").text;
+    parsed = parseUnknownNote(text);
+  }
+
+  const existingCards = new Set(parsed.cards.map((item) => item.name));
+  const missing = unique.filter((entry) => !existingCards.has(entry));
+  if (!missing.length) {
+    return { text, changed: text !== current };
+  }
+
+  const uncategorized = parsed.categories.find(
+    (item) => item.name === "未分类",
+  );
+  if (!uncategorized) return { text, changed: text !== current };
+
+  const lines = text.split(/\r?\n/);
+  let insertAt = uncategorized.end;
+  while (insertAt > 0 && lines[insertAt - 1] === "") {
+    insertAt -= 1;
+  }
+
+  const insert = [];
+  if (insertAt > 0 && lines[insertAt - 1] && lines[insertAt - 1].trim()) {
+    insert.push("");
+  }
   for (const entry of missing) {
-    if (text && !text.endsWith("\n")) text += "\n";
-    if (!text.endsWith("\n\n")) text += "\n";
-    text += `## ${entry}\n`;
+    insert.push(`## ${entry}`, "");
   }
-
-  return { text, changed: true };
+  lines.splice(insertAt, 0, ...insert);
+  text = ensureTrailingNewline(lines.join("\n"));
+  return { text, changed: text !== current };
 }
 
 function findHeadingLine(text, heading) {
@@ -1312,6 +1547,11 @@ class VocabCapturePlugin extends Plugin {
           !this.unknownStore.saving
         ) {
           void this.reloadUnknownStore(false);
+          return;
+        }
+
+        if (this.isUnknownNoteFile(file)) {
+          void this.refreshUnknownNoteUi();
         }
       }),
     );
@@ -1337,6 +1577,11 @@ class VocabCapturePlugin extends Plugin {
           !this.unknownStore.saving
         ) {
           void this.reloadUnknownStore(false);
+          return;
+        }
+
+        if (this.isUnknownNoteFile(file)) {
+          void this.refreshUnknownNoteUi();
         }
       }),
     );
@@ -1950,6 +2195,288 @@ class VocabCapturePlugin extends Plugin {
     }
   }
 
+  async refreshUnknownNoteUi() {
+    const notePath = this.getVaultUnknownNotePath();
+    if (!notePath) return;
+
+    const token = (this.unknownUiRefreshToken || 0) + 1;
+    this.unknownUiRefreshToken = token;
+
+    let text;
+    try {
+      text = await this.readTextFile(notePath);
+    } catch (error) {
+      return;
+    }
+    if (token !== this.unknownUiRefreshToken) return;
+
+    const structure = parseUnknownNote(text);
+    const signature = JSON.stringify({
+      categories: structure.categories.map((item) => item.name),
+      cards: structure.cards.map((item) => ({
+        name: item.name,
+        category: item.category,
+      })),
+    });
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView)) continue;
+      if (!view.file || view.file.path !== notePath) continue;
+
+      const preview = getPreviewElement(view);
+      const host = preview
+        ? view.containerEl.querySelector(".markdown-reading-view") ||
+          preview.parentElement
+        : view.containerEl.querySelector(".markdown-source-view");
+      if (!host) continue;
+
+      let panel = host.querySelector(
+        ":scope > .vocab-capture-note-ui",
+      );
+      if (!panel) {
+        panel = document.createElement("div");
+        panel.className = "vocab-capture-note-ui";
+        host.prepend(panel);
+      }
+      if (panel.dataset.uiSignature === signature) continue;
+      panel.dataset.uiSignature = signature;
+      this.renderUnknownNoteUi(panel, structure);
+    }
+  }
+
+  renderUnknownNoteUi(panel, structure) {
+    if (!panel) return;
+    panel.replaceChildren();
+
+    const create = (tag, className, text) => {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (text != null) element.textContent = text;
+      return element;
+    };
+
+    const header = create("div", "vocab-capture-note-ui__header");
+    header.appendChild(
+      create("div", "vocab-capture-note-ui__title", "不理解词管理"),
+    );
+    header.appendChild(
+      create(
+        "div",
+        "vocab-capture-note-ui__meta",
+        `${structure.cards.length} 个词条 · ${structure.categories.length} 个分类`,
+      ),
+    );
+    panel.appendChild(header);
+
+    const addRow = create("div", "vocab-capture-note-ui__row");
+    addRow.appendChild(
+      create("label", "vocab-capture-note-ui__label", "新增分类"),
+    );
+    const categoryInput = create(
+      "input",
+      "vocab-capture-note-ui__input",
+    );
+    categoryInput.type = "text";
+    categoryInput.placeholder = "输入分类名";
+    addRow.appendChild(categoryInput);
+    const addButton = create(
+      "button",
+      "vocab-capture-note-ui__button",
+      "添加",
+    );
+    addButton.type = "button";
+    addButton.addEventListener("click", async () => {
+      const name = categoryInput.value.trim();
+      if (!name) {
+        new Notice("请输入分类名");
+        return;
+      }
+      addButton.disabled = true;
+      try {
+        await this.addUnknownCategory(name);
+        categoryInput.value = "";
+      } finally {
+        addButton.disabled = false;
+      }
+    });
+    addRow.appendChild(addButton);
+    panel.appendChild(addRow);
+
+    const customCategories = structure.categories
+      .map((item) => item.name)
+      .filter((name) => name !== "未分类");
+    const deleteRow = create("div", "vocab-capture-note-ui__row");
+    deleteRow.appendChild(
+      create("label", "vocab-capture-note-ui__label", "删除分类"),
+    );
+    const deleteSelect = create(
+      "select",
+      "vocab-capture-note-ui__select",
+    );
+    for (const name of customCategories) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      deleteSelect.appendChild(option);
+    }
+    deleteRow.appendChild(deleteSelect);
+    const deleteButton = create(
+      "button",
+      "vocab-capture-note-ui__button",
+      "删除并移至未分类",
+    );
+    deleteButton.type = "button";
+    deleteButton.disabled = customCategories.length === 0;
+    deleteButton.addEventListener("click", async () => {
+      if (!deleteSelect.value) return;
+      deleteButton.disabled = true;
+      try {
+        await this.removeUnknownCategory(deleteSelect.value);
+      } finally {
+        deleteButton.disabled = false;
+      }
+    });
+    deleteRow.appendChild(deleteButton);
+    panel.appendChild(deleteRow);
+
+    const moveRow = create("div", "vocab-capture-note-ui__row");
+    moveRow.appendChild(
+      create("label", "vocab-capture-note-ui__label", "移动词条"),
+    );
+    const cardSelect = create(
+      "select",
+      "vocab-capture-note-ui__select",
+    );
+    for (const card of structure.cards) {
+      const option = document.createElement("option");
+      option.value = card.name;
+      option.textContent = `${card.name}（${card.category}）`;
+      cardSelect.appendChild(option);
+    }
+    moveRow.appendChild(cardSelect);
+    moveRow.appendChild(
+      create("span", "vocab-capture-note-ui__arrow", "→"),
+    );
+    const targetSelect = create(
+      "select",
+      "vocab-capture-note-ui__select",
+    );
+    for (const category of structure.categories) {
+      const option = document.createElement("option");
+      option.value = category.name;
+      option.textContent = category.name;
+      targetSelect.appendChild(option);
+    }
+    moveRow.appendChild(targetSelect);
+    const moveButton = create(
+      "button",
+      "vocab-capture-note-ui__button",
+      "移动",
+    );
+    moveButton.type = "button";
+    moveButton.disabled =
+      structure.cards.length === 0 || structure.categories.length < 2;
+    moveButton.addEventListener("click", async () => {
+      if (!cardSelect.value || !targetSelect.value) return;
+      moveButton.disabled = true;
+      try {
+        await this.moveUnknownCard(
+          cardSelect.value,
+          targetSelect.value,
+        );
+      } finally {
+        moveButton.disabled = false;
+      }
+    });
+    moveRow.appendChild(moveButton);
+    panel.appendChild(moveRow);
+
+    panel.appendChild(
+      create(
+        "div",
+        "vocab-capture-note-ui__hint",
+        "删除分类会把其下内容移到“未分类”，不会删除词条卡片内容。",
+      ),
+    );
+  }
+
+  async addUnknownCategory(name) {
+    const notePath = this.getVaultUnknownNotePath();
+    if (!notePath) return;
+    const result = addUnknownCategoryText(
+      await this.readTextFile(notePath),
+      name,
+    );
+    if (!result.changed) {
+      new Notice("分类已存在或名称为空");
+      return;
+    }
+    await this.writeTextFile(notePath, result.text);
+    new Notice(`已添加分类“${normalizeCategoryName(name)}”`);
+    await this.afterUnknownNoteChange();
+  }
+
+  async removeUnknownCategory(name) {
+    const notePath = this.getVaultUnknownNotePath();
+    if (!notePath) return;
+    const result = deleteUnknownCategoryText(
+      await this.readTextFile(notePath),
+      name,
+    );
+    if (!result.changed) {
+      new Notice("分类不存在，或不能删除“未分类”");
+      return;
+    }
+    await this.writeTextFile(notePath, result.text);
+    new Notice(
+      result.movedCards
+        ? `已删除分类“${normalizeCategoryName(name)}”，${result.movedCards} 个词条移至未分类`
+        : `已删除分类“${normalizeCategoryName(name)}”`,
+    );
+    await this.afterUnknownNoteChange();
+  }
+
+  async moveUnknownCard(cardName, targetCategory) {
+    const notePath = this.getVaultUnknownNotePath();
+    if (!notePath) return;
+    const result = moveUnknownCardText(
+      await this.readTextFile(notePath),
+      cardName,
+      targetCategory,
+    );
+    if (!result.changed) {
+      new Notice("词条或目标分类不存在，或已在目标分类");
+      return;
+    }
+    await this.writeTextFile(notePath, result.text);
+    new Notice(
+      `已将“${normalizeUnknownSelection(cardName)}”移动到“${normalizeCategoryName(targetCategory)}”`,
+    );
+    await this.afterUnknownNoteChange();
+  }
+
+  rerenderUnknownNoteViews() {
+    const notePath = this.getVaultUnknownNotePath();
+    if (!notePath) return;
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView)) continue;
+      if (!view.file || view.file.path !== notePath) continue;
+      try {
+        if (view.previewMode && view.previewMode.rerender) {
+          view.previewMode.rerender(true);
+        }
+      } catch (error) {
+        // 预览模式不可用时忽略。
+      }
+    }
+  }
+
+  async afterUnknownNoteChange() {
+    this.rerenderUnknownNoteViews();
+    await this.refreshUnknownNoteUi();
+  }
+
   findUnknownLinkAtPoint(event) {
     if (!this.unknownLinkRanges || !this.unknownLinkRanges.length) {
       return null;
@@ -2083,6 +2610,27 @@ class VocabCapturePlugin extends Plugin {
       return file.path === normalizeVaultPath(rawPath);
     } catch (error) {
       return false;
+    }
+  }
+
+  isUnknownNoteFile(file) {
+    if (!file) return false;
+    const rawPath = String(this.settings.unknownNotePath || "").trim();
+    if (!rawPath || isAbsolutePath(rawPath)) return false;
+    try {
+      return file.path === normalizeVaultPath(rawPath);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  getVaultUnknownNotePath() {
+    const rawPath = String(this.settings.unknownNotePath || "").trim();
+    if (!rawPath || isAbsolutePath(rawPath)) return null;
+    try {
+      return normalizeVaultPath(rawPath);
+    } catch (error) {
+      return null;
     }
   }
 
@@ -2236,6 +2784,7 @@ class VocabCapturePlugin extends Plugin {
         this.ensureObservers();
         this.refreshHighlights();
         this.refreshEditorHighlights();
+        void this.refreshUnknownNoteUi();
       } catch (error) {
         console.error("[vocab-capture] refresh failed", error);
       }
@@ -2794,6 +3343,10 @@ module.exports.__test = {
   findHeadingLine,
   findUnknownEntryForText,
   findUnknownEntryAtOffset,
+  parseUnknownNote,
+  addUnknownCategoryText,
+  deleteUnknownCategoryText,
+  moveUnknownCardText,
   parseWordSet,
   serializeWordSet,
   buildWordPatternSource,

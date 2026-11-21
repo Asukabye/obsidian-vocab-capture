@@ -296,7 +296,7 @@ test("插件: ensureUnknownHeadings 创建并复用笔记标题", async () => {
   assert.equal(changed, true);
   assert.equal(
     files.get("notes/unknown.md"),
-    "# 不理解的词\n\n## hello\n\n## world\n",
+    "# 未分类\n\n## hello\n\n## world\n",
   );
 
   const unchanged = await plugin.ensureUnknownHeadings(
@@ -344,7 +344,7 @@ test("插件: 点击阅读视图中的不理解词触发跳转", () => {
 test("插件: 取消不理解词不删除笔记中的标题内容", async () => {
   const files = new Map();
   files.set("unknown.txt", "hello\n");
-  files.set("note.md", "# 不理解的词\n\n## hello\n\n这里是用户写的解释。\n");
+  files.set("note.md", "# 未分类\n\n## hello\n\n这里是用户写的解释。\n");
   const plugin = Object.create(PluginClass.prototype);
   plugin.settings = {
     unknownFilePath: "unknown.txt",
@@ -368,7 +368,7 @@ test("插件: 取消不理解词不删除笔记中的标题内容", async () => 
   assert.equal(files.get("unknown.txt"), "");
   assert.equal(
     files.get("note.md"),
-    "# 不理解的词\n\n## hello\n\n这里是用户写的解释。\n",
+    "# 未分类\n\n## hello\n\n这里是用户写的解释。\n",
   );
 });
 
@@ -399,8 +399,48 @@ test("插件: openUnknownEntry 打开笔记并定位标题行", async () => {
 
   await plugin.openUnknownEntry("hello");
   assert.equal(opened, "note.md");
-  assert.equal(files.get("note.md"), "# 不理解的词\n\n## hello\n");
+  assert.equal(files.get("note.md"), "# 未分类\n\n## hello\n");
   assert.deepEqual(state, { line: 2 });
+});
+
+test("插件: 不理解词笔记前方渲染管理 UI", async () => {
+  const dom = new JSDOM(`<!doctype html><html><body>
+    <div class="markdown-reading-view">
+      <div class="markdown-preview-view">
+        <div class="markdown-preview-section"></div>
+      </div>
+    </div>
+  </body></html>`);
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.Element = dom.window.Element;
+
+  const view = Object.create(obsidianStub.MarkdownView.prototype);
+  view.containerEl = dom.window.document.body;
+  view.file = { path: "notes/unknown.md" };
+  view.getMode = () => "preview";
+
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = { unknownNotePath: "notes/unknown.md" };
+  plugin.app = {
+    workspace: { getLeavesOfType: () => [{ view }] },
+  };
+  plugin.readTextFile = async () =>
+    "# 技术\n\n## Vite\n\n- 释义：构建工具\n\n# 未分类\n\n## foo\n";
+  plugin.unknownUiRefreshToken = 0;
+
+  await plugin.refreshUnknownNoteUi();
+
+  const panel = dom.window.document.querySelector(
+    ".vocab-capture-note-ui",
+  );
+  assert.ok(panel);
+  assert.ok(panel.textContent.includes("不理解词管理"));
+  assert.ok(panel.textContent.includes("2 个词条"));
+  assert.equal(
+    panel.querySelectorAll("select").length >= 2,
+    true,
+  );
 });
 
 test("插件: 旧设置加载后补齐不理解词默认值", async () => {

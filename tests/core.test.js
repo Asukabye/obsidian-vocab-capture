@@ -32,6 +32,10 @@ const {
   findHeadingLine,
   findUnknownEntryForText,
   findUnknownEntryAtOffset,
+  parseUnknownNote,
+  addUnknownCategoryText,
+  deleteUnknownCategoryText,
+  moveUnknownCardText,
   parseWordSet,
   serializeWordSet,
   buildWordPatternSource,
@@ -150,7 +154,7 @@ test("不理解词笔记: 为缺失词条生成标题且不重复", () => {
   assert.equal(first.changed, true);
   assert.equal(
     first.text,
-    "# 不理解的词\n\n## hello\n\n## world\n",
+    "# 未分类\n\n## hello\n\n## world\n",
   );
   assert.equal(first.text.includes("## hello"), true);
   assert.equal(first.text.includes("## world"), true);
@@ -162,14 +166,21 @@ test("不理解词笔记: 为缺失词条生成标题且不重复", () => {
   assert.equal(second.changed, false);
   assert.equal(second.text, first.text);
 
-  const third = ensureUnknownHeadingsText("原有内容\n\n## hello\n", [
+  const third = ensureUnknownHeadingsText("# 未分类\n\n## hello\n", [
     "hello",
     "新词",
   ]);
   assert.equal(third.changed, true);
-  assert.ok(third.text.startsWith("原有内容\n\n## hello\n"));
+  assert.ok(third.text.startsWith("# 未分类\n\n## hello\n"));
   assert.ok(third.text.includes("## 新词"));
   assert.equal(findHeadingLine(third.text, "新词"), 4);
+
+  const migrated = ensureUnknownHeadingsText(
+    "# 不理解的词\n\n## hello\n",
+    ["hello"],
+  );
+  assert.ok(migrated.text.startsWith("# 未分类\n"));
+  assert.ok(!migrated.text.includes("# 不理解的词"));
 });
 
 test("不理解词链接: 根据文本或偏移定位词条", () => {
@@ -198,6 +209,64 @@ test("不理解词链接: 根据文本或偏移定位词条", () => {
     "你好，世界！",
   );
   assert.equal(findUnknownEntryAtOffset(text, 0, entries), null);
+});
+
+test("不理解词笔记: 新格式解析、分类增删与词条移动", () => {
+  const source = [
+    "# 技术",
+    "",
+    "## Vite",
+    "",
+    "- 释义：构建工具",
+    "",
+    "# 英语",
+    "",
+    "## defaultdict",
+    "",
+    "- 释义：默认字典",
+    "",
+    "# 未分类",
+    "",
+    "## foo",
+    "",
+  ].join("\n");
+
+  const parsed = parseUnknownNote(source);
+  assert.deepEqual(
+    parsed.categories.map((item) => item.name),
+    ["技术", "英语", "未分类"],
+  );
+  assert.deepEqual(
+    parsed.cards.map((item) => [item.name, item.category]),
+    [
+      ["Vite", "技术"],
+      ["defaultdict", "英语"],
+      ["foo", "未分类"],
+    ],
+  );
+
+  const added = addUnknownCategoryText(source, "算法");
+  assert.equal(added.changed, true);
+  assert.ok(added.text.includes("# 算法"));
+  assert.ok(
+    added.text.indexOf("# 算法") < added.text.indexOf("# 未分类"),
+  );
+
+  const deleted = deleteUnknownCategoryText(source, "技术");
+  assert.equal(deleted.changed, true);
+  assert.equal(deleted.movedCards, 1);
+  assert.ok(!deleted.text.includes("# 技术"));
+  assert.ok(deleted.text.includes("## Vite"));
+  assert.ok(deleted.text.includes("- 释义：构建工具"));
+  assert.ok(deleted.text.includes("# 未分类"));
+
+  const moved = moveUnknownCardText(source, "Vite", "英语");
+  assert.equal(moved.changed, true);
+  const movedParsed = parseUnknownNote(moved.text);
+  const vite = movedParsed.cards.find((item) => item.name === "Vite");
+  assert.equal(vite.category, "英语");
+  assert.ok(moved.text.includes("## Vite"));
+  assert.ok(moved.text.includes("- 释义：构建工具"));
 });
 
 test("不理解词: 任意文本可作为高亮条目", () => {
