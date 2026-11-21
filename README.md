@@ -38,7 +38,7 @@ Obsidian 插件：把选中的英文单词、英文短语或中文词语收录�
 
 ### 方式一：Release 安装包
 
-1. 从 [Releases](../../releases) 下载 `vocab-capture-0.8.0.zip`（仓库内 [`dist/vocab-capture-0.8.0.zip`](dist/vocab-capture-0.8.0.zip) 也可直接下载）。
+1. 从 [Releases](../../releases) 下载 `vocab-capture-0.8.1.zip`（仓库内 [`dist/vocab-capture-0.8.1.zip`](dist/vocab-capture-0.8.1.zip) 也可直接下载）。
 2. 解压到：
 
 ```text
