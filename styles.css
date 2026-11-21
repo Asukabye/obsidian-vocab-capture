@@ -104,9 +104,88 @@
   color: var(--text-faint);
 }
 
-.vocab-capture-note-ui__hint {
-  margin-top: 10px;
-  color: var(--text-faint);
-  font-size: 12px;
-  line-height: 1.5;
+.vocab-capture-note-ui { margin: 10px 0 22px; padding: 0; border: 0; background: transparent; }
+
+.vocab-capture-ui__compact { display: flex; align-items: center; gap: 12px; min-height: 46px; padding: 0 12px; border: 1px solid var(--background-modifier-border); border-radius: 9px; background: var(--background-primary-alt); }
+.vocab-capture-ui__compact-left { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
+.vocab-capture-ui__title { font-weight: 700; color: var(--text-normal); }
+.vocab-capture-ui__meta { color: var(--text-faint); font-size: 11px; }
+.vocab-capture-ui__chips { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+.vocab-capture-ui__chip { display: inline-flex; align-items: center; gap: 3px; height: 26px; padding: 0 8px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-muted); font: inherit; font-size: 11px; white-space: nowrap; cursor: pointer; }
+.vocab-capture-ui__chip:hover { background: var(--background-modifier-hover); }
+.vocab-capture-ui__chip.is-active { border-color: var(--background-modifier-border); background: var(--background-modifier-hover); color: var(--text-accent); }
+.vocab-capture-ui__chip-count { color: var(--text-faint); font-size: 10px; }
+.vocab-capture-ui__compact-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.vocab-capture-ui__ghost, .vocab-capture-ui__primary, .vocab-capture-ui__small-primary, .vocab-capture-ui__button { height: 28px; padding: 0 10px; border-radius: 5px; font: inherit; font-size: 11px; cursor: pointer; }
+.vocab-capture-ui__ghost { border: 1px solid transparent; background: transparent; color: var(--text-muted); }
+.vocab-capture-ui__ghost:hover { background: var(--background-modifier-hover); }
+.vocab-capture-ui__primary, .vocab-capture-ui__small-primary { border: 1px solid var(--interactive-accent); background: var(--interactive-accent); color: var(--text-on-accent); }
+.vocab-capture-ui__primary:hover, .vocab-capture-ui__small-primary:hover { background: var(--interactive-accent-hover); }
+.vocab-capture-ui__manager { position: relative; margin-top: 8px; border: 1px solid var(--background-modifier-border); border-radius: 9px; background: var(--background-secondary); overflow: hidden; }
+.vocab-capture-ui__manager-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--background-modifier-border); }
+.vocab-capture-ui__manager-title { font-size: 13px; font-weight: 700; color: var(--text-normal); }
+.vocab-capture-ui__manager-sub { color: var(--text-faint); font-size: 10px; white-space: nowrap; }
+.vocab-capture-ui__search { width: min(300px, 32%); height: 28px; margin-left: auto; padding: 0 8px; border: 1px solid var(--background-modifier-border); border-radius: 5px; background: var(--background-primary); color: var(--text-normal); font: inherit; font-size: 11px; }
+.vocab-capture-ui__close { width: 26px; height: 26px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); font-size: 18px; line-height: 1; cursor: pointer; }
+.vocab-capture-ui__close:hover { background: var(--background-modifier-hover); }
+.vocab-capture-ui__manager-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 300px; }
+.vocab-capture-ui__pane { min-width: 0; }
+.vocab-capture-ui__categories { padding: 10px 8px 8px 10px; border-right: 1px solid var(--background-modifier-border); }
+.vocab-capture-ui__pane-head { display: flex; align-items: center; justify-content: space-between; padding: 0 4px 6px; }
+.vocab-capture-ui__pane-title { color: var(--text-faint); font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.vocab-capture-ui__category-list { display: flex; flex-direction: column; gap: 1px; max-height: 250px; overflow: auto; }
+.vocab-capture-ui__category { display: flex; align-items: center; gap: 5px; min-height: 31px; padding: 0 5px; border-radius: 5px; color: var(--text-muted); font-size: 12px; cursor: pointer; }
+.vocab-capture-ui__category:hover { background: var(--background-modifier-hover); }
+.vocab-capture-ui__category.is-active { background: var(--background-modifier-hover); color: var(--text-accent); }
+.vocab-capture-ui__category.is-drop-target { outline: 1px dashed var(--interactive-accent); outline-offset: -2px; }
+.vocab-capture-ui__drag { flex: 0 0 auto; color: var(--text-faint); font-size: 10px; letter-spacing: -1px; cursor: grab; }
+.vocab-capture-ui__category-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vocab-capture-ui__count { margin-left: auto; padding: 0 5px; border-radius: 8px; background: var(--background-primary); color: var(--text-faint); font-size: 10px; }
+.vocab-capture-ui__actions { display: inline-flex; align-items: center; gap: 1px; opacity: 0; transition: opacity 100ms ease; }
+.vocab-capture-ui__category:hover .vocab-capture-ui__actions, .vocab-capture-ui__card:hover .vocab-capture-ui__actions { opacity: 1; }
+.vocab-capture-ui__icon { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); font: inherit; font-size: 12px; cursor: pointer; }
+.vocab-capture-ui__icon:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.vocab-capture-ui__icon.is-danger:hover { color: var(--text-error); }
+.vocab-capture-ui__category-add { display: flex; gap: 5px; margin: 8px 4px 0; }
+.vocab-capture-ui__input, .vocab-capture-ui__category-rename { min-width: 0; width: 100%; height: 27px; padding: 0 7px; border: 1px solid var(--background-modifier-border); border-radius: 5px; background: var(--background-primary); color: var(--text-normal); font: inherit; font-size: 11px; }
+.vocab-capture-ui__category-rename { flex: 1 1 auto; }
+.vocab-capture-ui__small-primary { height: 27px; padding: 0 8px; font-size: 11px; }
+.vocab-capture-ui__pane-note { margin: 8px 4px 0; padding-top: 7px; border-top: 1px dashed var(--background-modifier-border); color: var(--text-faint); font-size: 10px; line-height: 1.5; }
+.vocab-capture-ui__cards { padding: 10px 10px 6px 12px; }
+.vocab-capture-ui__cards-head { display: flex; align-items: baseline; gap: 8px; padding: 0 4px 6px; }
+.vocab-capture-ui__cards-heading { color: var(--text-normal); font-size: 12px; font-weight: 700; }
+.vocab-capture-ui__cards-count { color: var(--text-faint); font-size: 10px; }
+.vocab-capture-ui__cards-hint { margin-left: auto; color: var(--text-faint); font-size: 10px; }
+.vocab-capture-ui__card-list { display: flex; flex-direction: column; gap: 2px; max-height: 250px; overflow: auto; }
+.vocab-capture-ui__card { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 6px 6px 6px 4px; border: 1px solid transparent; border-radius: 5px; cursor: grab; }
+.vocab-capture-ui__card:hover { border-color: var(--background-modifier-border); background: var(--background-primary); }
+.vocab-capture-ui__card.is-dragging { opacity: 0.45; }
+.vocab-capture-ui__card-main { min-width: 0; }
+.vocab-capture-ui__card-title-line { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.vocab-capture-ui__card-title { overflow: hidden; color: var(--text-normal); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.vocab-capture-ui__tag { flex: 0 0 auto; padding: 0 4px; border-radius: 3px; background: var(--background-modifier-hover); color: var(--text-faint); font-size: 9px; }
+.vocab-capture-ui__snippet { overflow: hidden; margin-top: 2px; color: var(--text-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.vocab-capture-ui__empty { padding: 28px 12px; color: var(--text-faint); font-size: 11px; text-align: center; }
+.vocab-capture-ui__cards-foot { margin-top: 5px; padding: 6px 4px 0; border-top: 1px dashed var(--background-modifier-border); }
+.vocab-capture-ui__cards-foot-text { color: var(--text-faint); font-size: 10px; }
+.vocab-capture-ui__manager-foot { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-top: 1px solid var(--background-modifier-border); color: var(--text-faint); font-size: 10px; }
+.vocab-capture-ui__foot-right { margin-left: auto; }
+.vocab-capture-ui__modal-layer { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(30, 25, 40, 0.25); }
+.vocab-capture-ui__modal { width: 340px; padding: 17px 18px 13px; border: 1px solid var(--background-modifier-border); border-radius: 8px; background: var(--background-primary); box-shadow: 0 14px 40px rgba(25, 18, 35, 0.2); }
+.vocab-capture-ui__modal-title { margin-bottom: 7px; color: var(--text-normal); font-size: 13px; font-weight: 700; }
+.vocab-capture-ui__modal p { margin: 0 0 6px; color: var(--text-muted); font-size: 11px; line-height: 1.55; }
+.vocab-capture-ui__modal .vocab-capture-ui__modal-warn { color: var(--text-faint); }
+.vocab-capture-ui__modal-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 13px; }
+.vocab-capture-ui__button { border: 1px solid var(--background-modifier-border); background: var(--background-primary); color: var(--text-normal); }
+.vocab-capture-ui__button:hover { background: var(--background-modifier-hover); }
+.vocab-capture-ui__button.is-danger { border-color: var(--text-error); background: var(--text-error); color: var(--text-on-accent); }
+@media (max-width: 760px) {
+  .vocab-capture-ui__compact { flex-wrap: wrap; padding: 8px 10px; }
+  .vocab-capture-ui__chips { order: 3; width: 100%; overflow-x: auto; }
+  .vocab-capture-ui__compact-actions { margin-left: auto; }
+  .vocab-capture-ui__manager-body { grid-template-columns: 1fr; }
+  .vocab-capture-ui__categories { border-right: 0; border-bottom: 1px solid var(--background-modifier-border); }
+  .vocab-capture-ui__category-list { max-height: 150px; }
+  .vocab-capture-ui__search { width: 46%; }
+  .vocab-capture-ui__manager-sub { display: none; }
 }

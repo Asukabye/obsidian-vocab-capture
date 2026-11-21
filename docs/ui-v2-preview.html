@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>不理解词管理台 · UI 方案 A 示意</title>
+<style>
+  :root {
+    --bg: #f2f1ee;
+    --paper: #ffffff;
+    --text: #2f2d2a;
+    --muted: #7d7871;
+    --line: #e5e1db;
+    --accent: #7a5bd6;
+    --accent-strong: #6a49c9;
+    --accent-soft: #f0ebff;
+    --panel: #f8f7fb;
+    --hover: #f2f0f7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  .window {
+    position: relative;
+    width: 1180px;
+    margin: 26px auto 40px;
+    background: var(--paper);
+    border: 1px solid #d9d5cf;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 14px 38px rgba(35, 30, 22, 0.09);
+  }
+  .titlebar {
+    display: flex;
+    align-items: center;
+    height: 40px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--line);
+    background: #fbfaf8;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #d8d4ce; margin-right: 6px; }
+  .filename { margin-left: 8px; color: #5c5851; }
+  .preview-badge {
+    margin-left: auto;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: #f0ecff;
+    color: #7256c5;
+    font-size: 10px;
+  }
+
+  /* compact bar */
+  .compact {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    height: 50px;
+    padding: 0 28px;
+    border-bottom: 1px solid var(--line);
+    background: #fcfbfa;
+  }
+  .compact-left { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+  .compact-title { font-size: 14px; font-weight: 700; color: #37333d; }
+  .compact-meta { font-size: 11px; color: #9a948b; }
+  .chips { display: flex; align-items: center; gap: 6px; overflow: hidden; }
+  .chip {
+    padding: 4px 9px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    color: #746e66;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .chip span { color: #a39d94; margin-left: 3px; }
+  .chip.active {
+    background: var(--accent-soft);
+    border-color: #ddd3fb;
+    color: var(--accent-strong);
+  }
+  .chip.active span { color: #8e77ce; }
+  .compact-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .btn {
+    height: 30px;
+    padding: 0 12px;
+    border: 1px solid #d9d4df;
+    border-radius: 6px;
+    background: #fff;
+    color: #5e5867;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover { background: var(--accent-strong); }
+  .btn-ghost { background: transparent; border-color: transparent; color: #7a7480; }
+  .btn-ghost:hover { background: #f1eef8; }
+
+  /* manager */
+  .manager {
+    margin: 16px 28px 2px;
+    border: 1px solid #ded9ee;
+    border-radius: 11px;
+    background: var(--panel);
+    overflow: hidden;
+    box-shadow: 0 3px 12px rgba(79, 63, 120, 0.05);
+  }
+  .manager-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid #e5e0f0;
+  }
+  .manager-title { font-size: 14px; font-weight: 700; color: #3d3658; white-space: nowrap; }
+  .manager-sub { font-size: 11px; color: #958da8; white-space: nowrap; }
+  .search {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 30px;
+    min-width: 240px;
+    margin-left: auto;
+    padding: 0 10px;
+    border: 1px solid #ded9ea;
+    border-radius: 6px;
+    background: #fff;
+    color: #a39caf;
+    font-size: 11px;
+  }
+  .search-icon { font-size: 16px; line-height: 1; color: #aaa2b8; }
+  .manager-close {
+    width: 28px;
+    height: 28px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: #8d849b;
+    font-size: 18px;
+    cursor: pointer;
+  }
+  .manager-close:hover { background: #eeeaf7; }
+
+  .manager-body {
+    display: grid;
+    grid-template-columns: 238px minmax(0, 1fr);
+    min-height: 336px;
+  }
+  .pane { min-width: 0; }
+  .categories { border-right: 1px solid #e5e0f0; padding: 12px 10px 10px 12px; }
+  .pane-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4px 8px;
+  }
+  .pane-title {
+    color: #8b8398;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .pane-add { border: 0; background: transparent; color: var(--accent); font-size: 11px; cursor: pointer; }
+  .category-list { display: flex; flex-direction: column; gap: 2px; }
+  .category-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 35px;
+    padding: 0 7px;
+    border-radius: 7px;
+    color: #5e5866;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .category-row:hover { background: #f0edf7; }
+  .category-row.active {
+    background: #ebe5ff;
+    color: #5d43b6;
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .drag { color: #c2bbcd; font-size: 12px; letter-spacing: -2px; cursor: grab; }
+  .category-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .count {
+    margin-left: auto;
+    min-width: 20px;
+    padding: 1px 5px;
+    border-radius: 9px;
+    background: #f0edf4;
+    color: #9992a5;
+    font-size: 10px;
+    text-align: center;
+  }
+  .category-row.active .count { background: #ddd2ff; color: #6a4cc4; }
+  .more { border: 0; background: transparent; color: #aaa2b4; cursor: pointer; font-size: 16px; padding: 0 2px; }
+  .more:hover { color: #6d5c96; }
+  .categories-footer {
+    margin: 10px 4px 0;
+    padding-top: 9px;
+    border-top: 1px dashed #e2ddea;
+    color: #aaa2b6;
+    font-size: 10px;
+    line-height: 1.55;
+  }
+
+  .cards { padding: 12px 14px 10px 16px; }
+  .cards-head { display: flex; align-items: baseline; gap: 8px; padding: 0 4px 8px; }
+  .cards-heading { font-size: 13px; font-weight: 700; color: #443d58; }
+  .cards-count { font-size: 10px; color: #9c95a9; }
+  .cards-hint { margin-left: auto; color: #aaa3b5; font-size: 10px; }
+  .card-list { display: flex; flex-direction: column; gap: 3px; }
+  .card-row {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 8px 8px 5px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    cursor: grab;
+  }
+  .card-row:hover { background: #fff; border-color: #e4def1; }
+  .card-row.active { background: #fff; border-color: #d9d0f4; }
+  .card-main { min-width: 0; }
+  .card-title { color: #37313f; font-size: 12px; font-weight: 600; }
+  .card-tags { display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: 1px; }
+  .tag {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: #f2eff8;
+    color: #8a7cab;
+    font-size: 9px;
+    font-weight: 400;
+  }
+  .card-snippet {
+    margin-top: 2px;
+    overflow: hidden;
+    color: #9b95a3;
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .card-actions { display: flex; align-items: center; gap: 2px; }
+  .move-hint { display: none; }
+  .drop-line { height: 2px; margin: 2px 8px; border-radius: 2px; background: var(--accent); opacity: 0.55; }
+  .manager-foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    border-top: 1px solid #e5e0f0;
+    color: #9d96ad;
+    font-size: 10px;
+  }
+  .foot-right { margin-left: auto; color: #b0a9bb; }
+
+  /* note content */
+  .content { padding: 26px 64px 44px; font-family: Georgia, "Times New Roman", "Microsoft YaHei", serif; line-height: 1.85; }
+  .content h1 {
+    margin: 22px 0 16px;
+    padding-bottom: 7px;
+    border-bottom: 1px solid #ede9e3;
+    font-size: 25px;
+    letter-spacing: 0.01em;
+  }
+  .content h1:first-child { margin-top: 4px; }
+  .content h2 { margin: 22px 0 5px; font-size: 18px; }
+  .content .tags-line { margin: 0 0 5px; }
+  .content .tag { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 10px; padding: 2px 7px; }
+  .content .meta { margin: 3px 0; color: #5d574f; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 13px; }
+  .content .meta strong { font-weight: 600; color: #3f3a34; }
+  .content .blank { height: 18px; }
+
+  /* modal */
+  .modal-layer {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(35, 30, 44, 0.28);
+    backdrop-filter: blur(1px);
+  }
+  .modal {
+    width: 380px;
+    padding: 20px 22px 16px;
+    border: 1px solid #ded6f0;
+    border-radius: 11px;
+    background: #fff;
+    box-shadow: 0 18px 50px rgba(31, 23, 45, 0.22);
+    font-size: 12px;
+  }
+  .modal-title { margin-bottom: 8px; color: #3d3552; font-size: 15px; font-weight: 700; }
+  .modal p { margin: 0 0 8px; color: #777080; line-height: 1.65; }
+  .modal .modal-warn { color: #8b7b9e; font-size: 11px; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .btn-danger { background: #b35366; border-color: #b35366; color: #fff; }
+
+  .state-collapsed .manager { display: none; }
+  .state-collapsed .content { padding-top: 30px; }
+  .state-delete .modal-layer { display: flex; }
+  .modal-layer { display: none; }
+  .format-note {
+    width: 1180px;
+    margin: -28px auto 40px;
+    color: #948e85;
+    font-size: 11px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+  <div class="window" id="window">
+    <div class="titlebar">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      <span class="filename">不理解的词.md</span>
+      <span class="preview-badge">UI 方案 A · 界面示意</span>
+    </div>
+
+    <div class="compact">
+      <div class="compact-left">
+        <span class="compact-title">不理解词</span>
+        <span class="compact-meta">18 条 · 4 个分类</span>
+      </div>
+      <div class="chips">
+        <span class="chip active">技术 <span>6</span></span>
+        <span class="chip">算法 <span>4</span></span>
+        <span class="chip">英语 <span>3</span></span>
+        <span class="chip">未分类 <span>5</span></span>
+      </div>
+      <div class="compact-actions">
+        <button class="btn btn-ghost">＋ 分类</button>
+        <button class="btn btn-primary">管理</button>
+      </div>
+    </div>
+
+    <div class="manager">
+      <div class="manager-head">
+        <div class="manager-title">分类与卡片管理</div>
+        <div class="manager-sub">拖动卡片可快速归类</div>
+        <div class="search"><span class="search-icon">⌕</span><span>搜索词条、标签、释义…</span></div>
+        <button class="manager-close" aria-label="关闭">×</button>
+      </div>
+
+      <div class="manager-body">
+        <aside class="pane categories">
+          <div class="pane-head">
+            <span class="pane-title">分类</span>
+            <button class="pane-add">＋ 新分类</button>
+          </div>
+          <div class="category-list">
+            <div class="category-row active"><span class="drag">⋮⋮</span><span class="category-name">技术</span><span class="count">6</span><button class="more">⋯</button></div>
+            <div class="category-row"><span class="drag">⋮⋮</span><span class="category-name">算法</span><span class="count">4</span><button class="more">⋯</button></div>
+            <div class="category-row"><span class="drag">⋮⋮</span><span class="category-name">英语</span><span class="count">3</span><button class="more">⋯</button></div>
+            <div class="category-row"><span class="drag">⋮⋮</span><span class="category-name">未分类</span><span class="count">5</span><button class="more">⋯</button></div>
+          </div>
+          <div class="categories-footer">“未分类”固定在最下方，不能删除。</div>
+        </aside>
+
+        <section class="pane cards">
+          <div class="cards-head">
+            <span class="cards-heading">技术</span>
+            <span class="cards-count">6 个词条</span>
+            <span class="cards-hint">拖到左侧分类即可移动</span>
+          </div>
+          <div class="card-list">
+            <div class="card-row active">
+              <span class="drag">⋮⋮</span>
+              <div class="card-main">
+                <div><span class="card-title">Vite</span><span class="card-tags"><span class="tag">#前端</span><span class="tag">#构建工具</span></span></div>
+                <div class="card-snippet">现代前端构建工具，关注 dev server 与依赖预构建。</div>
+              </div>
+              <div class="card-actions"><button class="more">⋯</button></div>
+            </div>
+            <div class="card-row">
+              <span class="drag">⋮⋮</span>
+              <div class="card-main">
+                <div><span class="card-title">SKU</span><span class="card-tags"><span class="tag">#电商</span><span class="tag">#术语</span></span></div>
+                <div class="card-snippet">库存量单位，Stock Keeping Unit。</div>
+              </div>
+              <div class="card-actions"><button class="more">⋯</button></div>
+            </div>
+            <div class="card-row">
+              <span class="drag">⋮⋮</span>
+              <div class="card-main">
+                <div><span class="card-title">人机协作</span><span class="card-tags"><span class="tag">#协作</span><span class="tag">#AI</span></span></div>
+                <div class="card-snippet">人与 AI 系统共同完成任务的工作方式。</div>
+              </div>
+              <div class="card-actions"><button class="more">⋯</button></div>
+            </div>
+            <div class="card-row">
+              <span class="drag">⋮⋮</span>
+              <div class="card-main">
+                <div><span class="card-title">字节级</span><span class="card-tags"><span class="tag">#数据</span></span></div>
+                <div class="card-snippet">按字节为单位处理或比较数据。</div>
+              </div>
+              <div class="card-actions"><button class="more">⋯</button></div>
+            </div>
+            <div class="drop-line"></div>
+            <div class="card-row">
+              <span class="drag">⋮⋮</span>
+              <div class="card-main">
+                <div><span class="card-title">hashlib.sha256</span><span class="card-tags"><span class="tag">#Python</span></span></div>
+                <div class="card-snippet">Python 标准库中的 SHA-256 哈希接口。</div>
+              </div>
+              <div class="card-actions"><button class="more">⋯</button></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="manager-foot">
+        <span>删除分类时，卡片会移至“未分类”，内容不会删除。</span>
+        <span class="foot-right">18 条 · 4 个分类</span>
+      </div>
+    </div>
+
+    <div class="content">
+      <h1>技术</h1>
+
+      <h2>Vite</h2>
+      <div class="tags-line"><span class="tag">#前端</span><span class="tag">#构建工具</span></div>
+      <div class="meta"><strong>释义：</strong>现代前端构建工具。</div>
+      <div class="meta"><strong>备注：</strong>关注 dev server 与依赖预构建。</div>
+
+      <h2>SKU</h2>
+      <div class="tags-line"><span class="tag">#电商</span><span class="tag">#术语</span></div>
+      <div class="meta"><strong>释义：</strong>库存量单位。</div>
+      <div class="meta"><strong>备注：</strong>Stock Keeping Unit。</div>
+
+      <h1>算法</h1>
+
+      <h2>pHash</h2>
+      <div class="tags-line"><span class="tag">#图片</span><span class="tag">#哈希</span></div>
+      <div class="meta"><strong>释义：</strong>感知哈希，用于图片相似度比较。</div>
+      <div class="meta"><strong>备注：</strong>与 Hamming 距离配合使用。</div>
+
+      <h2>Hamming</h2>
+      <div class="tags-line"><span class="tag">#距离</span><span class="tag">#相似度</span></div>
+      <div class="meta"><strong>释义：</strong>汉明距离。</div>
+      <div class="meta"><strong>备注：</strong>比较等长二进制串的不同位数。</div>
+
+      <div class="blank"></div>
+    </div>
+
+    <div class="modal-layer">
+      <div class="modal">
+        <div class="modal-title">删除分类“技术”？</div>
+        <p>该分类下的 6 张卡片将移动到“未分类”。</p>
+        <p class="modal-warn">卡片标题、释义、备注等内容不会删除。</p>
+        <div class="modal-actions">
+          <button class="btn">取消</button>
+          <button class="btn btn-danger">删除并移动卡片</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="format-note">界面与版式示意（模拟 Obsidian），实际颜色、字体与宽度随主题变化。</div>
+  <script>
+    const state = new URLSearchParams(location.search).get("state");
+    if (state === "collapsed") document.getElementById("window").classList.add("state-collapsed");
+    if (state === "delete") document.getElementById("window").classList.add("state-delete");
+  </script>
+</body>
+</html>

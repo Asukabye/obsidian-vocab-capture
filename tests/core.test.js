@@ -36,6 +36,9 @@ const {
   addUnknownCategoryText,
   deleteUnknownCategoryText,
   moveUnknownCardText,
+  renameUnknownCategoryText,
+  reorderUnknownCategoryText,
+  moveUnknownCategoryBeforeText,
   parseWordSet,
   serializeWordSet,
   buildWordPatternSource,
@@ -267,6 +270,31 @@ test("不理解词笔记: 新格式解析、分类增删与词条移动", () => 
   assert.equal(vite.category, "英语");
   assert.ok(moved.text.includes("## Vite"));
   assert.ok(moved.text.includes("- 释义：构建工具"));
+
+  const renamed = renameUnknownCategoryText(source, "技术", "工具");
+  assert.equal(renamed.changed, true);
+  assert.ok(renamed.text.includes("# 工具"));
+  assert.ok(!renamed.text.includes("# 技术"));
+  assert.equal(
+    parseUnknownNote(renamed.text).cards.find(
+      (item) => item.name === "Vite",
+    ).category,
+    "工具",
+  );
+
+  const reordered = reorderUnknownCategoryText(source, "技术", 1);
+  assert.equal(reordered.changed, true);
+  assert.deepEqual(
+    parseUnknownNote(reordered.text).categories.map((item) => item.name),
+    ["英语", "技术", "未分类"],
+  );
+
+  const before = moveUnknownCategoryBeforeText(source, "技术", "英语");
+  assert.equal(before.changed, true);
+  assert.deepEqual(
+    parseUnknownNote(before.text).categories.map((item) => item.name),
+    ["技术", "英语", "未分类"],
+  );
 });
 
 test("不理解词: 任意文本可作为高亮条目", () => {

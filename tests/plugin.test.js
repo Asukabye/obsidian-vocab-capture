@@ -428,6 +428,13 @@ test("插件: 不理解词笔记前方渲染管理 UI", async () => {
   plugin.readTextFile = async () =>
     "# 技术\n\n## Vite\n\n- 释义：构建工具\n\n# 未分类\n\n## foo\n";
   plugin.unknownUiRefreshToken = 0;
+  plugin.unknownUiState = {
+    expanded: true,
+    selectedCategory: "技术",
+    search: "",
+    confirmDelete: null,
+    focusAdd: false,
+  };
 
   await plugin.refreshUnknownNoteUi();
 
@@ -435,11 +442,15 @@ test("插件: 不理解词笔记前方渲染管理 UI", async () => {
     ".vocab-capture-note-ui",
   );
   assert.ok(panel);
-  assert.ok(panel.textContent.includes("不理解词管理"));
-  assert.ok(panel.textContent.includes("2 个词条"));
-  assert.equal(
-    panel.querySelectorAll("select").length >= 2,
-    true,
+  assert.ok(panel.querySelector(".vocab-capture-ui__compact"));
+  assert.ok(panel.querySelector(".vocab-capture-ui__manager"));
+  assert.ok(panel.textContent.includes("分类与卡片管理"));
+  assert.ok(panel.textContent.includes("技术"));
+  assert.ok(
+    panel.querySelectorAll(".vocab-capture-ui__category").length >= 2,
+  );
+  assert.ok(
+    panel.querySelectorAll(".vocab-capture-ui__card").length >= 1,
   );
 });
 

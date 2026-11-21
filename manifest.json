@@ -1,9 +1,9 @@
 {
   "id": "vocab-capture",
   "name": "生词捕获",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "minAppVersion": "1.5.0",
-  "description": "不理解词使用分类笔记和前置管理 UI；F2 收录/取消并链接到标题。",
+  "description": "不理解词使用可折叠分类/卡片管理台；支持分类增删改排序与卡片拖拽移动。",
   "author": "DeepSeek Harness",
   "isDesktopOnly": false
 }

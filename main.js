@@ -293,6 +293,34 @@ function parseUnknownNote(text) {
     }
   }
 
+  for (const card of cards) {
+    const body = lines.slice(card.start + 1, card.end);
+    const tags = new Set();
+    let snippet = "";
+    let inFence = false;
+    for (const line of body) {
+      if (/^\s*(```|~~~)/.test(line)) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue;
+      for (const match of line.matchAll(/#[\p{L}\p{N}_/-]+/gu)) {
+        tags.add(match[0]);
+      }
+      if (!snippet && line.trim()) {
+        const plain = line
+          .replace(/^\s*[-*+]\s*/, "")
+          .replace(/\*\*/g, "")
+          .trim();
+        if (plain && !/^#[\p{L}\p{N}_/-]+$/.test(plain)) {
+          snippet = plain;
+        }
+      }
+    }
+    card.tags = Array.from(tags);
+    card.snippet = snippet;
+  }
+
   return { text: source, lines, categories, cards };
 }
 
@@ -435,6 +463,122 @@ function moveUnknownCardText(text, cardName, targetCategory) {
   nextLines.splice(at, 0, ...insert);
   remaining = ensureTrailingNewline(nextLines.join("\n"));
   return { text: remaining, changed: true };
+}
+
+function renameUnknownCategoryText(text, oldName, newName) {
+  const current = String(text == null ? "" : text);
+  const sourceName = normalizeCategoryName(oldName);
+  const targetName = normalizeCategoryName(newName);
+  if (!sourceName || !targetName || sourceName === "未分类") {
+    return { text: current, changed: false };
+  }
+
+  const parsed = parseUnknownNote(current);
+  const category = parsed.categories.find(
+    (item) => item.name === sourceName,
+  );
+  if (!category) return { text: current, changed: false };
+  if (
+    sourceName !== targetName &&
+    parsed.categories.some((item) => item.name === targetName)
+  ) {
+    return { text: current, changed: false };
+  }
+
+  const lines = current.split(/\r?\n/);
+  lines[category.start] = `# ${targetName}`;
+  return {
+    text: ensureTrailingNewline(lines.join("\n")),
+    changed: sourceName !== targetName,
+  };
+}
+
+function rebuildUnknownCategories(parsed, lines, orderedBlocks) {
+  const preamble = lines.slice(0, parsed.categories[0]?.start || 0);
+  return ensureTrailingNewline(
+    [...preamble, ...orderedBlocks.flat()].join("\n"),
+  );
+}
+
+function reorderUnknownCategoryText(text, name, direction) {
+  const current = String(text == null ? "" : text);
+  const categoryName = normalizeCategoryName(name);
+  if (
+    !categoryName ||
+    categoryName === "未分类" ||
+    !Number.isFinite(direction) ||
+    direction === 0
+  ) {
+    return { text: current, changed: false };
+  }
+
+  const parsed = parseUnknownNote(current);
+  const index = parsed.categories.findIndex(
+    (item) => item.name === categoryName,
+  );
+  const targetIndex = index + Math.sign(direction);
+  if (index < 0 || targetIndex < 0 || targetIndex >= parsed.categories.length) {
+    return { text: current, changed: false };
+  }
+  if (parsed.categories[targetIndex].name === "未分类") {
+    return { text: current, changed: false };
+  }
+
+  const lines = current.split(/\r?\n/);
+  const blocks = parsed.categories.map((item) =>
+    lines.slice(item.start, item.end),
+  );
+  [blocks[index], blocks[targetIndex]] = [
+    blocks[targetIndex],
+    blocks[index],
+  ];
+  return {
+    text: rebuildUnknownCategories(parsed, lines, blocks),
+    changed: true,
+  };
+}
+
+function moveUnknownCategoryBeforeText(text, name, targetName) {
+  const current = String(text == null ? "" : text);
+  const sourceName = normalizeCategoryName(name);
+  const destination = normalizeCategoryName(targetName);
+  if (
+    !sourceName ||
+    !destination ||
+    sourceName === destination ||
+    sourceName === "未分类"
+  ) {
+    return { text: current, changed: false };
+  }
+
+  const parsed = parseUnknownNote(current);
+  const source = parsed.categories.find(
+    (item) => item.name === sourceName,
+  );
+  const target = parsed.categories.find(
+    (item) => item.name === destination,
+  );
+  if (!source || !target) return { text: current, changed: false };
+
+  const lines = current.split(/\r?\n/);
+  const blocks = parsed.categories.map((item) => ({
+    name: item.name,
+    lines: lines.slice(item.start, item.end),
+  }));
+  const sourceBlock = blocks.find((item) => item.name === sourceName);
+  const rest = blocks.filter((item) => item.name !== sourceName);
+  const targetIndex = rest.findIndex((item) => item.name === destination);
+  if (targetIndex < 0) return { text: current, changed: false };
+  rest.splice(targetIndex, 0, sourceBlock);
+
+  return {
+    text: rebuildUnknownCategories(
+      parsed,
+      lines,
+      rest.map((item) => item.lines),
+    ),
+    changed: true,
+  };
 }
 
 function ensureUnknownHeadingsText(existing, entries) {
@@ -1373,6 +1517,13 @@ class VocabCapturePlugin extends Plugin {
     this.currentUnknownHighlight = null;
     this.unknownLinkRanges = [];
     this.unknownHoverTarget = null;
+    this.unknownUiState = {
+      expanded: false,
+      selectedCategory: "未分类",
+      search: "",
+      confirmDelete: null,
+      focusAdd: false,
+    };
     this.wordsVersion = 0;
     this.editorApi = null;
     this.editorRefreshEffect = null;
@@ -2217,6 +2368,13 @@ class VocabCapturePlugin extends Plugin {
         name: item.name,
         category: item.category,
       })),
+      expanded: Boolean(this.unknownUiState && this.unknownUiState.expanded),
+      selectedCategory: this.unknownUiState
+        ? this.unknownUiState.selectedCategory
+        : "未分类",
+      confirmDelete: this.unknownUiState
+        ? this.unknownUiState.confirmDelete
+        : null,
     });
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
@@ -2246,158 +2404,558 @@ class VocabCapturePlugin extends Plugin {
 
   renderUnknownNoteUi(panel, structure) {
     if (!panel) return;
+    const state = this.unknownUiState || {
+      expanded: false,
+      selectedCategory: "未分类",
+      search: "",
+      confirmDelete: null,
+      focusAdd: false,
+    };
+    this.unknownUiState = state;
+
+    const names = structure.categories.map((item) => item.name);
+    if (!names.includes(state.selectedCategory)) {
+      state.selectedCategory =
+        (names.includes("未分类") && names.length === 1
+          ? "未分类"
+          : names[0]) || "未分类";
+    }
+    if (typeof state.search !== "string") state.search = "";
+    if (typeof state.expanded !== "boolean") state.expanded = false;
+    if (typeof state.focusAdd !== "boolean") state.focusAdd = false;
+
     panel.replaceChildren();
 
-    const create = (tag, className, text) => {
+    const make = (tag, className, text) => {
       const element = document.createElement(tag);
       if (className) element.className = className;
       if (text != null) element.textContent = text;
       return element;
     };
+    const makeButton = (text, title, className, onClick) => {
+      const button = make("button", className, text);
+      button.type = "button";
+      button.title = title || "";
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        onClick();
+      });
+      return button;
+    };
+    const render = () => this.renderUnknownNoteUi(panel, structure);
 
-    const header = create("div", "vocab-capture-note-ui__header");
-    header.appendChild(
-      create("div", "vocab-capture-note-ui__title", "不理解词管理"),
+    const compact = make("div", "vocab-capture-ui__compact");
+    const compactLeft = make("div", "vocab-capture-ui__compact-left");
+    compactLeft.appendChild(
+      make("span", "vocab-capture-ui__title", "不理解词"),
     );
-    header.appendChild(
-      create(
-        "div",
-        "vocab-capture-note-ui__meta",
-        `${structure.cards.length} 个词条 · ${structure.categories.length} 个分类`,
+    compactLeft.appendChild(
+      make(
+        "span",
+        "vocab-capture-ui__meta",
+        `${structure.cards.length} 条 · ${structure.categories.length} 个分类`,
       ),
     );
-    panel.appendChild(header);
+    compact.appendChild(compactLeft);
 
-    const addRow = create("div", "vocab-capture-note-ui__row");
-    addRow.appendChild(
-      create("label", "vocab-capture-note-ui__label", "新增分类"),
+    const chips = make("div", "vocab-capture-ui__chips");
+    for (const category of structure.categories) {
+      const chip = makeButton(
+        category.name,
+        `查看 ${category.name}`,
+        "vocab-capture-ui__chip",
+        () => {
+          state.selectedCategory = category.name;
+          state.expanded = true;
+          render();
+        },
+      );
+      const count = make(
+        "span",
+        "vocab-capture-ui__chip-count",
+        category.cards.length,
+      );
+      chip.appendChild(count);
+      if (category.name === state.selectedCategory) {
+        chip.classList.add("is-active");
+      }
+      chips.appendChild(chip);
+    }
+    compact.appendChild(chips);
+
+    const compactActions = make("div", "vocab-capture-ui__compact-actions");
+    compactActions.appendChild(
+      makeButton("＋ 分类", "新增分类", "vocab-capture-ui__ghost", () => {
+        state.expanded = true;
+        state.focusAdd = true;
+        render();
+      }),
     );
-    const categoryInput = create(
-      "input",
-      "vocab-capture-note-ui__input",
+    compactActions.appendChild(
+      makeButton(
+        state.expanded ? "收起" : "管理",
+        state.expanded ? "收起管理台" : "展开管理台",
+        "vocab-capture-ui__primary",
+        () => {
+          state.expanded = !state.expanded;
+          render();
+        },
+      ),
     );
-    categoryInput.type = "text";
-    categoryInput.placeholder = "输入分类名";
-    addRow.appendChild(categoryInput);
-    const addButton = create(
-      "button",
-      "vocab-capture-note-ui__button",
+    compact.appendChild(compactActions);
+    panel.appendChild(compact);
+
+    if (!state.expanded) {
+      if (state.focusAdd) state.focusAdd = false;
+      this.applyUnknownUiCardFilter(panel);
+      return;
+    }
+
+    const manager = make("div", "vocab-capture-ui__manager");
+    const head = make("div", "vocab-capture-ui__manager-head");
+    const headTitle = make("div", "vocab-capture-ui__manager-title", "分类与卡片管理");
+    head.appendChild(headTitle);
+    head.appendChild(
+      make(
+        "div",
+        "vocab-capture-ui__manager-sub",
+        "拖动卡片可快速归类",
+      ),
+    );
+    const search = make("input", "vocab-capture-ui__search");
+    search.type = "search";
+    search.placeholder = "搜索词条、标签、释义…";
+    search.value = state.search;
+    head.appendChild(search);
+    const closeButton = makeButton(
+      "×",
+      "关闭管理台",
+      "vocab-capture-ui__close",
+      () => {
+        state.expanded = false;
+        render();
+      },
+    );
+    head.appendChild(closeButton);
+    manager.appendChild(head);
+
+    const body = make("div", "vocab-capture-ui__manager-body");
+    const categoriesPane = make(
+      "aside",
+      "vocab-capture-ui__pane vocab-capture-ui__categories",
+    );
+    const categoriesHead = make("div", "vocab-capture-ui__pane-head");
+    categoriesHead.appendChild(
+      make("span", "vocab-capture-ui__pane-title", "分类"),
+    );
+    categoriesPane.appendChild(categoriesHead);
+
+    const categoryList = make("div", "vocab-capture-ui__category-list");
+    for (const category of structure.categories) {
+      const row = make("div", "vocab-capture-ui__category");
+      if (category.name === state.selectedCategory) {
+        row.classList.add("is-active");
+      }
+      row.draggable = category.name !== "未分类";
+
+      row.appendChild(make("span", "vocab-capture-ui__drag", "⋮⋮"));
+      const name = make(
+        "span",
+        "vocab-capture-ui__category-name",
+        category.name,
+      );
+      name.addEventListener("dblclick", (event) => {
+        event.stopPropagation();
+        if (category.name === "未分类") return;
+        this.beginUnknownCategoryRename(row, category.name, panel, structure);
+      });
+      row.appendChild(name);
+      row.appendChild(
+        make(
+          "span",
+          "vocab-capture-ui__count",
+          String(category.cards.length),
+        ),
+      );
+
+      if (category.name !== "未分类") {
+        const actions = make("span", "vocab-capture-ui__actions");
+        actions.appendChild(
+          makeButton("✎", "重命名分类", "vocab-capture-ui__icon", () => {
+            this.beginUnknownCategoryRename(
+              row,
+              category.name,
+              panel,
+              structure,
+            );
+          }),
+        );
+        actions.appendChild(
+          makeButton("↑", "上移分类", "vocab-capture-ui__icon", () => {
+            void this.reorderUnknownCategory(category.name, -1);
+          }),
+        );
+        actions.appendChild(
+          makeButton("↓", "下移分类", "vocab-capture-ui__icon", () => {
+            void this.reorderUnknownCategory(category.name, 1);
+          }),
+        );
+        actions.appendChild(
+          makeButton("×", "删除分类", "vocab-capture-ui__icon is-danger", () => {
+            state.confirmDelete = category.name;
+            render();
+          }),
+        );
+        row.appendChild(actions);
+      }
+
+      row.addEventListener("click", () => {
+        state.selectedCategory = category.name;
+        render();
+      });
+      row.addEventListener("dragstart", (event) => {
+        if (category.name === "未分类") {
+          event.preventDefault();
+          return;
+        }
+        state.dragCategory = category.name;
+        state.dragCard = null;
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", category.name);
+        }
+        row.classList.add("is-dragging");
+      });
+      row.addEventListener("dragend", () => {
+        state.dragCategory = null;
+        row.classList.remove("is-dragging");
+      });
+      row.addEventListener("dragover", (event) => {
+        if (state.dragCategory || state.dragCard) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          row.classList.add("is-drop-target");
+        }
+      });
+      row.addEventListener("dragleave", () => {
+        row.classList.remove("is-drop-target");
+      });
+      row.addEventListener("drop", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        row.classList.remove("is-drop-target");
+        const cardName = state.dragCard;
+        const categoryName = state.dragCategory;
+        state.dragCard = null;
+        state.dragCategory = null;
+        if (cardName) {
+          await this.moveUnknownCard(cardName, category.name);
+        } else if (categoryName) {
+          await this.moveUnknownCategoryBefore(categoryName, category.name);
+        }
+      });
+
+      categoryList.appendChild(row);
+    }
+    categoriesPane.appendChild(categoryList);
+
+    const addRow = make("div", "vocab-capture-ui__category-add");
+    const addInput = make("input", "vocab-capture-ui__input");
+    addInput.type = "text";
+    addInput.placeholder = "新分类名称";
+    addInput.value = "";
+    const addButton = makeButton(
       "添加",
+      "新增分类",
+      "vocab-capture-ui__small-primary",
+      async () => {
+        const value = addInput.value.trim();
+        if (!value) {
+          new Notice("请输入分类名");
+          return;
+        }
+        state.selectedCategory = normalizeCategoryName(value);
+        await this.addUnknownCategory(value);
+      },
     );
-    addButton.type = "button";
-    addButton.addEventListener("click", async () => {
-      const name = categoryInput.value.trim();
-      if (!name) {
-        new Notice("请输入分类名");
+    addInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void addButton.click();
+      }
+    });
+    addRow.appendChild(addInput);
+    addRow.appendChild(addButton);
+    categoriesPane.appendChild(addRow);
+    categoriesPane.appendChild(
+      make(
+        "div",
+        "vocab-capture-ui__pane-note",
+        "“未分类”固定在最下方，不能删除。",
+      ),
+    );
+    body.appendChild(categoriesPane);
+
+    const cardsPane = make(
+      "section",
+      "vocab-capture-ui__pane vocab-capture-ui__cards",
+    );
+    const cardsHead = make("div", "vocab-capture-ui__cards-head");
+    const cardsHeading = make(
+      "span",
+      "vocab-capture-ui__cards-heading",
+      state.selectedCategory,
+    );
+    cardsHead.appendChild(cardsHeading);
+    const visibleCount = make(
+      "span",
+      "vocab-capture-ui__cards-count",
+      "",
+    );
+    cardsHead.appendChild(visibleCount);
+    cardsHead.appendChild(
+      make(
+        "span",
+        "vocab-capture-ui__cards-hint",
+        "拖动卡片到左侧分类即可移动",
+      ),
+    );
+    cardsPane.appendChild(cardsHead);
+
+    const cardList = make("div", "vocab-capture-ui__card-list");
+    const selectedCards = structure.cards.filter(
+      (card) => card.category === state.selectedCategory,
+    );
+    if (!selectedCards.length) {
+      cardList.appendChild(
+        make(
+          "div",
+          "vocab-capture-ui__empty",
+          "该分类暂时没有卡片。按 F2 收录新词后会出现在这里。",
+        ),
+      );
+    }
+    for (const card of selectedCards) {
+      const row = make("div", "vocab-capture-ui__card");
+      row.draggable = true;
+      const searchText = [
+        card.name,
+        card.category,
+        ...(card.tags || []),
+        card.snippet || "",
+      ]
+        .join(" ")
+        .toLocaleLowerCase();
+      row.dataset.searchText = searchText;
+      row.appendChild(make("span", "vocab-capture-ui__drag", "⋮⋮"));
+
+      const main = make("div", "vocab-capture-ui__card-main");
+      const titleLine = make("div", "vocab-capture-ui__card-title-line");
+      titleLine.appendChild(
+        make("span", "vocab-capture-ui__card-title", card.name),
+      );
+      for (const tag of card.tags || []) {
+        titleLine.appendChild(
+          make("span", "vocab-capture-ui__tag", tag),
+        );
+      }
+      main.appendChild(titleLine);
+      if (card.snippet) {
+        main.appendChild(
+          make("div", "vocab-capture-ui__snippet", card.snippet),
+        );
+      }
+      row.appendChild(main);
+
+      const actions = make("span", "vocab-capture-ui__actions");
+      actions.appendChild(
+        makeButton(
+          "↗",
+          "定位到卡片",
+          "vocab-capture-ui__icon",
+          () => {
+            void this.openUnknownEntry(card.name);
+          },
+        ),
+      );
+      row.appendChild(actions);
+      row.addEventListener("click", (event) => {
+        if (event.target.closest("button")) return;
+        void this.openUnknownEntry(card.name);
+      });
+      row.addEventListener("dragstart", (event) => {
+        state.dragCard = card.name;
+        state.dragCategory = null;
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", card.name);
+        }
+        row.classList.add("is-dragging");
+      });
+      row.addEventListener("dragend", () => {
+        state.dragCard = null;
+        row.classList.remove("is-dragging");
+      });
+      cardList.appendChild(row);
+    }
+    cardsPane.appendChild(cardList);
+
+    const cardsFoot = make("div", "vocab-capture-ui__cards-foot");
+    cardsFoot.appendChild(
+      make(
+        "span",
+        "vocab-capture-ui__cards-foot-text",
+        "卡片内容仍在 Markdown 正文中编辑；这里只管理结构和位置。",
+      ),
+    );
+    cardsPane.appendChild(cardsFoot);
+    body.appendChild(cardsPane);
+    manager.appendChild(body);
+
+    const foot = make("div", "vocab-capture-ui__manager-foot");
+    foot.appendChild(
+      make(
+        "span",
+        "",
+        "删除分类时，卡片会移至“未分类”，内容不会删除。",
+      ),
+    );
+    foot.appendChild(
+      make(
+        "span",
+        "vocab-capture-ui__foot-right",
+        `${structure.cards.length} 条 · ${structure.categories.length} 个分类`,
+      ),
+    );
+    manager.appendChild(foot);
+
+    if (state.confirmDelete) {
+      const layer = make(
+        "div",
+        "vocab-capture-ui__modal-layer",
+      );
+      const modal = make("div", "vocab-capture-ui__modal");
+      modal.appendChild(
+        make(
+          "div",
+          "vocab-capture-ui__modal-title",
+          `删除分类“${state.confirmDelete}”？`,
+        ),
+      );
+      const target = structure.categories.find(
+        (item) => item.name === state.confirmDelete,
+      );
+      modal.appendChild(
+        make(
+          "p",
+          "",
+          `该分类下的 ${target ? target.cards.length : 0} 张卡片将移动到“未分类”。`,
+        ),
+      );
+      modal.appendChild(
+        make(
+          "p",
+          "vocab-capture-ui__modal-warn",
+          "卡片标题、释义、备注等内容不会删除。",
+        ),
+      );
+      const actions = make("div", "vocab-capture-ui__modal-actions");
+      actions.appendChild(
+        makeButton("取消", "", "vocab-capture-ui__button", () => {
+          state.confirmDelete = null;
+          render();
+        }),
+      );
+      actions.appendChild(
+        makeButton(
+          "删除并移动卡片",
+          "",
+          "vocab-capture-ui__button is-danger",
+          async () => {
+            const name = state.confirmDelete;
+            state.confirmDelete = null;
+            await this.removeUnknownCategory(name);
+          },
+        ),
+      );
+      modal.appendChild(actions);
+      layer.appendChild(modal);
+      manager.appendChild(layer);
+    }
+
+    panel.appendChild(manager);
+
+    search.addEventListener("input", () => {
+      state.search = search.value;
+      this.applyUnknownUiCardFilter(panel);
+    });
+    this.applyUnknownUiCardFilter(panel);
+
+    if (state.focusAdd) {
+      state.focusAdd = false;
+      window.setTimeout(() => addInput.focus(), 0);
+    }
+  }
+
+  applyUnknownUiCardFilter(panel) {
+    if (!panel) return;
+    const state = this.unknownUiState || {};
+    const query = String(state.search || "").trim().toLocaleLowerCase();
+    const rows = panel.querySelectorAll(".vocab-capture-ui__card");
+    let visible = 0;
+    for (const row of rows) {
+      const match =
+        !query || (row.dataset.searchText || "").includes(query);
+      row.hidden = !match;
+      if (match) visible += 1;
+    }
+    const count = panel.querySelector(".vocab-capture-ui__cards-count");
+    if (count) count.textContent = `${visible} 个词条`;
+  }
+
+  beginUnknownCategoryRename(row, oldName, panel, structure) {
+    if (!row || oldName === "未分类") return;
+    const nameElement = row.querySelector(
+      ".vocab-capture-ui__category-name",
+    );
+    if (!nameElement || row.querySelector(".vocab-capture-ui__input")) {
+      return;
+    }
+    const input = document.createElement("input");
+    input.className = "vocab-capture-ui__category-rename";
+    input.type = "text";
+    input.value = oldName;
+    nameElement.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let finished = false;
+    const finish = async (save) => {
+      if (finished) return;
+      finished = true;
+      if (!save) {
+        this.renderUnknownNoteUi(panel, structure);
         return;
       }
-      addButton.disabled = true;
-      try {
-        await this.addUnknownCategory(name);
-        categoryInput.value = "";
-      } finally {
-        addButton.disabled = false;
+      const value = input.value.trim();
+      if (!value || value === oldName) {
+        this.renderUnknownNoteUi(panel, structure);
+        return;
+      }
+      await this.renameUnknownCategory(oldName, value);
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void finish(true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        void finish(false);
       }
     });
-    addRow.appendChild(addButton);
-    panel.appendChild(addRow);
-
-    const customCategories = structure.categories
-      .map((item) => item.name)
-      .filter((name) => name !== "未分类");
-    const deleteRow = create("div", "vocab-capture-note-ui__row");
-    deleteRow.appendChild(
-      create("label", "vocab-capture-note-ui__label", "删除分类"),
-    );
-    const deleteSelect = create(
-      "select",
-      "vocab-capture-note-ui__select",
-    );
-    for (const name of customCategories) {
-      const option = document.createElement("option");
-      option.value = name;
-      option.textContent = name;
-      deleteSelect.appendChild(option);
-    }
-    deleteRow.appendChild(deleteSelect);
-    const deleteButton = create(
-      "button",
-      "vocab-capture-note-ui__button",
-      "删除并移至未分类",
-    );
-    deleteButton.type = "button";
-    deleteButton.disabled = customCategories.length === 0;
-    deleteButton.addEventListener("click", async () => {
-      if (!deleteSelect.value) return;
-      deleteButton.disabled = true;
-      try {
-        await this.removeUnknownCategory(deleteSelect.value);
-      } finally {
-        deleteButton.disabled = false;
-      }
+    input.addEventListener("blur", () => {
+      if (!finished) void finish(false);
     });
-    deleteRow.appendChild(deleteButton);
-    panel.appendChild(deleteRow);
-
-    const moveRow = create("div", "vocab-capture-note-ui__row");
-    moveRow.appendChild(
-      create("label", "vocab-capture-note-ui__label", "移动词条"),
-    );
-    const cardSelect = create(
-      "select",
-      "vocab-capture-note-ui__select",
-    );
-    for (const card of structure.cards) {
-      const option = document.createElement("option");
-      option.value = card.name;
-      option.textContent = `${card.name}（${card.category}）`;
-      cardSelect.appendChild(option);
-    }
-    moveRow.appendChild(cardSelect);
-    moveRow.appendChild(
-      create("span", "vocab-capture-note-ui__arrow", "→"),
-    );
-    const targetSelect = create(
-      "select",
-      "vocab-capture-note-ui__select",
-    );
-    for (const category of structure.categories) {
-      const option = document.createElement("option");
-      option.value = category.name;
-      option.textContent = category.name;
-      targetSelect.appendChild(option);
-    }
-    moveRow.appendChild(targetSelect);
-    const moveButton = create(
-      "button",
-      "vocab-capture-note-ui__button",
-      "移动",
-    );
-    moveButton.type = "button";
-    moveButton.disabled =
-      structure.cards.length === 0 || structure.categories.length < 2;
-    moveButton.addEventListener("click", async () => {
-      if (!cardSelect.value || !targetSelect.value) return;
-      moveButton.disabled = true;
-      try {
-        await this.moveUnknownCard(
-          cardSelect.value,
-          targetSelect.value,
-        );
-      } finally {
-        moveButton.disabled = false;
-      }
-    });
-    moveRow.appendChild(moveButton);
-    panel.appendChild(moveRow);
-
-    panel.appendChild(
-      create(
-        "div",
-        "vocab-capture-note-ui__hint",
-        "删除分类会把其下内容移到“未分类”，不会删除词条卡片内容。",
-      ),
-    );
   }
 
   async addUnknownCategory(name) {
@@ -2412,6 +2970,10 @@ class VocabCapturePlugin extends Plugin {
       return;
     }
     await this.writeTextFile(notePath, result.text);
+    if (this.unknownUiState) {
+      this.unknownUiState.selectedCategory = normalizeCategoryName(name);
+      this.unknownUiState.focusAdd = false;
+    }
     new Notice(`已添加分类“${normalizeCategoryName(name)}”`);
     await this.afterUnknownNoteChange();
   }
@@ -2428,6 +2990,12 @@ class VocabCapturePlugin extends Plugin {
       return;
     }
     await this.writeTextFile(notePath, result.text);
+    if (this.unknownUiState) {
+      if (this.unknownUiState.selectedCategory === normalizeCategoryName(name)) {
+        this.unknownUiState.selectedCategory = "未分类";
+      }
+      this.unknownUiState.confirmDelete = null;
+    }
     new Notice(
       result.movedCards
         ? `已删除分类“${normalizeCategoryName(name)}”，${result.movedCards} 个词条移至未分类`
@@ -2452,6 +3020,59 @@ class VocabCapturePlugin extends Plugin {
     new Notice(
       `已将“${normalizeUnknownSelection(cardName)}”移动到“${normalizeCategoryName(targetCategory)}”`,
     );
+    await this.afterUnknownNoteChange();
+  }
+
+  async renameUnknownCategory(oldName, newName) {
+    const notePath = this.getVaultUnknownNotePath();
+    if (!notePath) return;
+    const result = renameUnknownCategoryText(
+      await this.readTextFile(notePath),
+      oldName,
+      newName,
+    );
+    if (!result.changed) {
+      new Notice("分类未变化、已存在或不能重命名“未分类”");
+      await this.refreshUnknownNoteUi();
+      return;
+    }
+    await this.writeTextFile(notePath, result.text);
+    if (this.unknownUiState) {
+      this.unknownUiState.selectedCategory = normalizeCategoryName(newName);
+      this.unknownUiState.confirmDelete = null;
+    }
+    new Notice(
+      `已将分类“${normalizeCategoryName(oldName)}”重命名为“${normalizeCategoryName(newName)}”`,
+    );
+    await this.afterUnknownNoteChange();
+  }
+
+  async reorderUnknownCategory(name, direction) {
+    const notePath = this.getVaultUnknownNotePath();
+    if (!notePath) return;
+    const result = reorderUnknownCategoryText(
+      await this.readTextFile(notePath),
+      name,
+      direction,
+    );
+    if (!result.changed) {
+      new Notice("该分类无法继续移动");
+      return;
+    }
+    await this.writeTextFile(notePath, result.text);
+    await this.afterUnknownNoteChange();
+  }
+
+  async moveUnknownCategoryBefore(name, targetName) {
+    const notePath = this.getVaultUnknownNotePath();
+    if (!notePath) return;
+    const result = moveUnknownCategoryBeforeText(
+      await this.readTextFile(notePath),
+      name,
+      targetName,
+    );
+    if (!result.changed) return;
+    await this.writeTextFile(notePath, result.text);
     await this.afterUnknownNoteChange();
   }
 
@@ -3347,6 +3968,9 @@ module.exports.__test = {
   addUnknownCategoryText,
   deleteUnknownCategoryText,
   moveUnknownCardText,
+  renameUnknownCategoryText,
+  reorderUnknownCategoryText,
+  moveUnknownCategoryBeforeText,
   parseWordSet,
   serializeWordSet,
   buildWordPatternSource,
