@@ -45,6 +45,41 @@ const {
 } = PluginClass.__test;
 const HIGHLIGHT_NAME = getHighlightName();
 
+function makeFakeVault(initialFiles, initialDirs) {
+  const files = new Map(initialFiles || []);
+  const dirs = new Set(initialDirs || []);
+  const adapter = {
+    async exists(path) { return files.has(path) || dirs.has(path); },
+    async read(path) { return files.get(path) || ""; },
+    async write(path, text) { files.set(path, text); },
+    async rename(from, to) {
+      if (files.has(from)) { files.set(to, files.get(from)); files.delete(from); }
+      else { dirs.delete(from); dirs.add(to); }
+    },
+  };
+  function build(path) {
+    if (files.has(path)) {
+      const name = path.split("/").pop();
+      return { path, name, basename: name.replace(/\.md$/i, ""), extension: "md" };
+    }
+    if (!dirs.has(path)) return null;
+    const prefix = path + "/";
+    const names = new Set();
+    for (const file of files.keys()) if (file.startsWith(prefix)) names.add(file.slice(prefix.length).split("/")[0]);
+    for (const dir of dirs) if (dir.startsWith(prefix)) names.add(dir.slice(prefix.length).split("/")[0]);
+    const children = [...names].map((name) => build(prefix + name)).filter(Boolean);
+    return { path, name: path.split("/").pop(), children };
+  }
+  const vault = {
+    adapter,
+    getMarkdownFiles() { return [...files.keys()].filter((path) => path.endsWith(".md")).map(build); },
+    getAbstractFileByPath(path) { return build(path); },
+    async createFolder(path) { dirs.add(path); },
+    async create(path, text) { files.set(path, text || ""); },
+  };
+  return { vault, files, dirs };
+}
+
 function setup() {
   const dom = new JSDOM(`<!doctype html><html><body>
     <div class="workspace-leaf-content">
@@ -282,21 +317,25 @@ test("插件: toggleUnknown 同一入口收录与取消收录", async () => {
 });
 
 test("插件: ensureUnknownHeadings 创建并复用笔记标题", async () => {
-  const files = new Map();
+  const fake = makeFakeVault();
   const plugin = Object.create(PluginClass.prototype);
-  plugin.settings = { unknownNotePath: "notes/unknown.md" };
-  plugin.readTextFile = async (path) => files.get(path) || "";
-  plugin.writeTextFile = async (path, text) => {
-    files.set(path, text);
+  plugin.settings = {
+    unknownFilePath: "unknown.txt",
+    unknownRootFolder: "不理解的词",
+    unknownNotePath: "不理解的词/未分类.md",
   };
+  plugin.app = { vault: fake.vault, workspace: { getLeavesOfType: () => [] } };
+  plugin.saveSettings = async () => {};
+  plugin.scheduleRefresh = () => {};
+  plugin.unknownStore = { entries: new Set() };
 
   const changed = await plugin.ensureUnknownHeadings(
     new Set(["hello", "world"]),
   );
   assert.equal(changed, true);
   assert.equal(
-    files.get("notes/unknown.md"),
-    "# 未分类\n\n## hello\n\n## world\n",
+    fake.files.get("不理解的词/未分类.md"),
+    "# hello\n\n# world\n",
   );
 
   const unchanged = await plugin.ensureUnknownHeadings(
@@ -373,34 +412,30 @@ test("插件: 取消不理解词不删除笔记中的标题内容", async () => 
 });
 
 test("插件: openUnknownEntry 打开笔记并定位标题行", async () => {
-  const files = new Map();
+  const fake = makeFakeVault(
+    new Map([["不理解的词/未分类.md", "# hello\n"]]),
+    new Set(["不理解的词"]),
+  );
   const plugin = Object.create(PluginClass.prototype);
-  plugin.settings = { unknownNotePath: "note.md" };
-  plugin.unknownStore = { entries: new Set(["hello"]) };
-  plugin.readTextFile = async (path) => files.get(path) || "";
-  plugin.writeTextFile = async (path, text) => {
-    files.set(path, text);
+  plugin.settings = {
+    unknownRootFolder: "不理解的词",
+    unknownNotePath: "不理解的词/未分类.md",
   };
-
-  let opened = null;
-  let state = null;
+  plugin.unknownStore = { entries: new Set(["hello"]) };
   plugin.app = {
+    vault: fake.vault,
     workspace: {
-      openLinkText: async (path) => {
-        opened = path;
-      },
+      getLeavesOfType: () => [],
+      openLinkText: async (path) => { plugin.openedPath = path; },
       getActiveViewOfType: () => ({
-        setEphemeralState: (value) => {
-          state = value;
-        },
+        setEphemeralState: (value) => { plugin.state = value; },
       }),
     },
   };
 
   await plugin.openUnknownEntry("hello");
-  assert.equal(opened, "note.md");
-  assert.equal(files.get("note.md"), "# 未分类\n\n## hello\n");
-  assert.deepEqual(state, { line: 2 });
+  assert.equal(plugin.openedPath, "不理解的词/未分类.md");
+  assert.deepEqual(plugin.state, { line: 0 });
 });
 
 test("插件: 不理解词笔记前方渲染管理 UI", async () => {
@@ -415,43 +450,43 @@ test("插件: 不理解词笔记前方渲染管理 UI", async () => {
   global.document = dom.window.document;
   global.Element = dom.window.Element;
 
+  const path = "不理解的词/未分类.md";
+  const fake = makeFakeVault(
+    new Map([[path, "# Vite\n\n# foo\n"]]),
+    new Set(["不理解的词"]),
+  );
   const view = Object.create(obsidianStub.MarkdownView.prototype);
   view.containerEl = dom.window.document.body;
-  view.file = { path: "notes/unknown.md" };
+  view.file = { path };
   view.getMode = () => "preview";
 
   const plugin = Object.create(PluginClass.prototype);
-  plugin.settings = { unknownNotePath: "notes/unknown.md" };
+  plugin.settings = {
+    unknownRootFolder: "不理解的词",
+    unknownNotePath: path,
+  };
   plugin.app = {
+    vault: fake.vault,
     workspace: { getLeavesOfType: () => [{ view }] },
   };
-  plugin.readTextFile = async () =>
-    "# 技术\n\n## Vite\n\n- 释义：构建工具\n\n# 未分类\n\n## foo\n";
   plugin.unknownUiRefreshToken = 0;
   plugin.unknownUiState = {
-    expanded: true,
-    selectedCategory: "技术",
+    managerOpen: true,
+    expanded: new Set(["不理解的词"]),
+    selectedFile: path,
+    selectedHeading: "Vite",
+    folder: "不理解的词",
     search: "",
-    confirmDelete: null,
-    focusAdd: false,
   };
 
   await plugin.refreshUnknownNoteUi();
 
-  const panel = dom.window.document.querySelector(
-    ".vocab-capture-note-ui",
-  );
+  const panel = dom.window.document.querySelector(".vocab-capture-note-ui");
   assert.ok(panel);
-  assert.ok(panel.querySelector(".vocab-capture-ui__compact"));
-  assert.ok(panel.querySelector(".vocab-capture-ui__manager"));
-  assert.ok(panel.textContent.includes("分类与卡片管理"));
-  assert.ok(panel.textContent.includes("技术"));
-  assert.ok(
-    panel.querySelectorAll(".vocab-capture-ui__category").length >= 2,
-  );
-  assert.ok(
-    panel.querySelectorAll(".vocab-capture-ui__card").length >= 1,
-  );
+  assert.ok(panel.querySelector(".vocab-capture-folder-ui__compact"));
+  assert.ok(panel.querySelector(".vocab-capture-folder-ui__manager"));
+  assert.ok(panel.textContent.includes("文件夹与卡片"));
+  assert.ok(panel.textContent.includes("Vite"));
 });
 
 test("插件: 旧设置加载后补齐不理解词默认值", async () => {
@@ -463,7 +498,8 @@ test("插件: 旧设置加载后补齐不理解词默认值", async () => {
   await plugin.loadSettings();
 
   assert.equal(plugin.settings.unknownFilePath, "不理解的词.txt");
-  assert.equal(plugin.settings.unknownNotePath, "不理解的词.md");
+  assert.equal(plugin.settings.unknownRootFolder, "不理解的词");
+  assert.equal(plugin.settings.unknownNotePath, "不理解的词/未分类.md");
   assert.equal(plugin.settings.unknownHotkey.key, "Q");
   assert.deepEqual(plugin.settings.unknownHotkey.modifiers, ["Alt"]);
 });

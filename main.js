@@ -17,7 +17,8 @@ const DEFAULT_SETTINGS = {
   wordFilePath: "生词本.txt",
   hotkey: { modifiers: ["Alt"], key: "W" },
   unknownFilePath: "不理解的词.txt",
-  unknownNotePath: "不理解的词.md",
+  unknownRootFolder: "不理解的词",
+  unknownNotePath: "不理解的词/未分类.md",
   unknownHotkey: { modifiers: ["Alt"], key: "Q" },
   highlightColor: "rgba(64, 190, 160, 0.28)",
   unknownHighlightColor: "rgba(236, 144, 56, 0.36)",
@@ -1478,6 +1479,137 @@ class WordStore {
   }
 }
 
+function parseMarkdownHeadings(text) {
+  const source = String(text == null ? "" : text);
+  const lines = source.split(/\r?\n/);
+  const headings = [];
+  let inFence = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+
+    const match = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+    if (!match) continue;
+    headings.push({
+      title: match[2].trim(),
+      level: match[1].length,
+      start: index,
+      end: lines.length,
+    });
+  }
+
+  for (let index = 0; index < headings.length; index += 1) {
+    const heading = headings[index];
+    for (let next = index + 1; next < headings.length; next += 1) {
+      if (headings[next].level <= heading.level) {
+        heading.end = headings[next].start;
+        break;
+      }
+    }
+  }
+
+  return { source, lines, headings };
+}
+
+function convertFlatUnknownNoteToCards(text) {
+  const current = String(text == null ? "" : text);
+  const parsed = parseUnknownNote(current);
+  const lines = current.split(/\r?\n/);
+  const blocks = [];
+
+  for (const card of parsed.cards) {
+    const block = lines.slice(card.start, card.end);
+    if (!block.length) continue;
+    block[0] = `# ${card.name}`;
+    while (block.length && !block[block.length - 1].trim()) {
+      block.pop();
+    }
+    if (block.length) {
+      blocks.push(block.join("\n"));
+    }
+  }
+
+  return blocks.length ? `${blocks.join("\n\n")}\n` : "";
+}
+
+function normalizeSafeFolderName(value) {
+  const name = String(value == null ? "" : value)
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ")
+    .replace(/[. ]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!name || name === "." || name === "..") return "";
+  return name;
+}
+
+function normalizeSafeMarkdownName(value) {
+  let name = String(value == null ? "" : value).trim();
+  if (!name) return "";
+  if (!name.toLowerCase().endsWith(".md")) name += ".md";
+  const base = normalizeSafeFolderName(name.slice(0, -3));
+  return base ? `${base}.md` : "";
+}
+
+function headingLevelsWithinLimit(heading) {
+  return heading && heading.level >= 1 && heading.level <= 6;
+}
+
+function findHeadingSection(text, title) {
+  const parsed = parseMarkdownHeadings(text);
+  const heading = parsed.headings.find((item) => item.title === title);
+  if (!heading) return null;
+  return {
+    heading,
+    section: parsed.lines.slice(heading.start, heading.end),
+    before: parsed.lines.slice(0, heading.start),
+    after: parsed.lines.slice(heading.end),
+  };
+}
+
+function insertHeadingSection(text, parentTitle, section) {
+  const parsed = parseMarkdownHeadings(text);
+  const lines = parsed.lines.slice();
+  let at = lines.length;
+
+  if (parentTitle) {
+    const parent = parsed.headings.find((item) => item.title === parentTitle);
+    if (!parent) return null;
+    at = parent.end;
+  }
+
+  while (at > 0 && !lines[at - 1].trim()) at -= 1;
+  const insert = section.slice();
+  if (at > 0 && lines[at - 1] && lines[at - 1].trim()) insert.unshift("");
+  if (insert.length && insert[insert.length - 1].trim()) insert.push("");
+  lines.splice(at, 0, ...insert);
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return `${lines.join("\n")}\n`;
+}
+
+function removeHeadingSection(text, title) {
+  const found = findHeadingSection(text, title);
+  if (!found) return null;
+  const lines = `${found.before.join("\n")}\n${found.after.join("\n")}`.split(/\r?\n/);
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return `${lines.join("\n")}\n`;
+}
+
+function uniqueHeadingTitles(text) {
+  const parsed = parseMarkdownHeadings(text);
+  const seen = new Set();
+  const duplicates = [];
+  for (const heading of parsed.headings) {
+    if (seen.has(heading.title)) duplicates.push(heading.title);
+    seen.add(heading.title);
+  }
+  return { parsed, duplicates, seen };
+}
+
 class UnknownStore {
   constructor(plugin) {
     this.plugin = plugin;
@@ -1518,11 +1650,12 @@ class VocabCapturePlugin extends Plugin {
     this.unknownLinkRanges = [];
     this.unknownHoverTarget = null;
     this.unknownUiState = {
-      expanded: false,
-      selectedCategory: "未分类",
+      managerOpen: false,
+      expanded: new Set(),
+      selectedFile: null,
+      selectedHeading: null,
+      folder: null,
       search: "",
-      confirmDelete: null,
-      focusAdd: false,
     };
     this.wordsVersion = 0;
     this.editorApi = null;
@@ -1553,6 +1686,7 @@ class VocabCapturePlugin extends Plugin {
     this.unknownStore = new UnknownStore(this);
     try {
       await this.unknownStore.load();
+      await this.ensureUnknownWorkspace();
       await this.ensureUnknownHeadings(this.unknownStore.entries, false);
     } catch (error) {
       console.error("[vocab-capture] load unknown list failed", error);
@@ -1865,6 +1999,346 @@ class VocabCapturePlugin extends Plugin {
     }
   }
 
+  getUnknownRootPath() {
+    const raw = String(this.settings.unknownRootFolder || "").trim();
+    const fallback = String(this.settings.unknownNotePath || "")
+      .split("/")
+      .slice(0, -1)
+      .join("/");
+    const candidate = raw || fallback || "不理解的词";
+    if (isAbsolutePath(candidate)) return null;
+    try {
+      return normalizeVaultPath(candidate);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  getDefaultUnknownNotePath() {
+    const root = this.getUnknownRootPath();
+    if (!root) return null;
+    try {
+      return normalizeVaultPath(root + "/未分类.md");
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async ensureUnknownFolder(path) {
+    const target = normalizeVaultPath(path);
+    if (!target) return false;
+    const adapter = this.app.vault.adapter;
+    if (await adapter.exists(target)) return true;
+    try {
+      await this.app.vault.createFolder(target);
+      return true;
+    } catch (error) {
+      return Boolean(await adapter.exists(target));
+    }
+  }
+
+  async ensureUnknownWorkspace() {
+    const root = this.getUnknownRootPath();
+    if (!root) return false;
+    await this.ensureUnknownFolder(root);
+
+    const dashboard = this.getDefaultUnknownNotePath();
+    if (!dashboard) return false;
+    this.settings.unknownNotePath = dashboard;
+
+    const adapter = this.app.vault.adapter;
+    const dashboardExists = await adapter.exists(dashboard);
+    const legacyCandidates = [
+      String(this.legacyUnknownNotePath || "").trim(),
+      String(this.settings.unknownNotePath || "").trim(),
+      "不理解的词.md",
+    ].filter(Boolean);
+    if (!dashboardExists) {
+      for (const legacy of legacyCandidates) {
+        if (legacy === dashboard) continue;
+        try {
+          if (await adapter.exists(legacy)) {
+            const oldText = await this.readTextFile(legacy);
+            const converted = convertFlatUnknownNoteToCards(oldText);
+            if (converted.trim()) {
+              await this.writeTextFile(dashboard, converted);
+              await this.saveSettings();
+              break;
+            }
+          }
+        } catch (error) {
+          console.error("[vocab-capture] migrate unknown note failed", error);
+        }
+      }
+    }
+    if (!(await adapter.exists(dashboard))) {
+      await this.writeTextFile(dashboard, "");
+    }
+    if (this.settings.unknownNotePath !== dashboard) {
+      this.settings.unknownNotePath = dashboard;
+      await this.saveSettings();
+    }
+    return true;
+  }
+
+  async getUnknownMarkdownFiles() {
+    const root = this.getUnknownRootPath();
+    if (!root) return [];
+    return this.app.vault
+      .getMarkdownFiles()
+      .filter((file) => file.path === root || file.path.startsWith(root + "/"))
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  async getUnknownWorkspaceData() {
+    const root = this.getUnknownRootPath();
+    const dashboard = this.getDefaultUnknownNotePath();
+    const files = [];
+    for (const file of await this.getUnknownMarkdownFiles()) {
+      let text = "";
+      try {
+        text = await this.readTextFile(file.path);
+      } catch (error) {
+        text = "";
+      }
+      const parsed = parseMarkdownHeadings(text);
+      files.push({
+        path: file.path,
+        name: file.name,
+        basename: file.basename,
+        headings: parsed.headings,
+        text,
+      });
+    }
+
+    const fileMap = new Map(files.map((file) => [file.path, file]));
+    let tree = null;
+    try {
+      const rootFile = this.app.vault.getAbstractFileByPath(root);
+      if (rootFile && rootFile.children) {
+        const convert = (node) => {
+          if (node.path && fileMap.has(node.path)) {
+            return {
+              name: node.name,
+              path: node.path,
+              type: "file",
+              count: fileMap.get(node.path).headings.length,
+            };
+          }
+          if (node.children) {
+            const children = node.children
+              .map(convert)
+              .filter(Boolean)
+              .sort((a, b) => {
+                if (a.type !== b.type) return a.type === "folder" ? -1 : 1;
+                return a.name.localeCompare(b.name);
+              });
+            return {
+              name: node.name || (node.path === root ? "不理解的词" : ""),
+              path: node.path,
+              type: "folder",
+              count: children.reduce((sum, child) => sum + (child.count || 0), 0),
+              children,
+            };
+          }
+          return null;
+        };
+        tree = convert(rootFile);
+      }
+    } catch (error) {
+      tree = null;
+    }
+
+    if (!tree || (!tree.children?.length && files.length)) {
+      tree = {
+        name: root.split("/").pop() || "不理解的词",
+        path: root,
+        type: "folder",
+        count: files.reduce((sum, file) => sum + file.headings.length, 0),
+        children: files.map((file) => ({
+          name: file.name,
+          path: file.path,
+          type: "file",
+          count: file.headings.length,
+        })),
+      };
+    }
+
+    return { root, dashboard, files, fileMap, tree };
+  }
+
+  getUnknownCardIndex(workspace) {
+    const index = new Map();
+    const dashboard = workspace.dashboard;
+    for (const file of workspace.files) {
+      for (const heading of file.headings) {
+        const item = {
+          title: heading.title,
+          level: heading.level,
+          line: heading.start,
+          filePath: file.path,
+        };
+        const current = index.get(heading.title);
+        if (!current || (file.path === dashboard && current.filePath !== dashboard)) {
+          index.set(heading.title, item);
+        }
+      }
+    }
+    return index;
+  }
+
+  invalidateUnknownCardIndex() {
+    this.unknownCardIndex = null;
+  }
+
+  async getUnknownCard(entry) {
+    const workspace = await this.getUnknownWorkspaceData();
+    const index = this.getUnknownCardIndex(workspace);
+    return index.get(entry) || null;
+  }
+
+  async addUnknownFolder(parentPath, name) {
+    const root = this.getUnknownRootPath();
+    const safe = normalizeSafeFolderName(name);
+    if (!root || !safe) return { changed: false, notice: "文件夹名无效" };
+    const parent = normalizeVaultPath(parentPath || root);
+    let target = parent + "/" + safe;
+    let suffix = 2;
+    while (await this.app.vault.adapter.exists(target)) {
+      target = parent + "/" + safe + "-" + suffix;
+      suffix += 1;
+    }
+    try {
+      await this.app.vault.createFolder(target);
+      return { changed: true, path: target };
+    } catch (error) {
+      return { changed: false, notice: String(error.message || error) };
+    }
+  }
+
+  async addUnknownMarkdown(folderPath, name) {
+    const safe = normalizeSafeMarkdownName(name);
+    if (!safe) return { changed: false, notice: "Markdown 文件名无效" };
+    const folder = normalizeVaultPath(folderPath);
+    let target = folder + "/" + safe;
+    let suffix = 2;
+    while (await this.app.vault.adapter.exists(target)) {
+      target = folder + "/" + safe.replace(/\.md$/i, "-" + suffix + ".md");
+      suffix += 1;
+    }
+    try {
+      await this.app.vault.create(target, "");
+      return { changed: true, path: target };
+    } catch (error) {
+      return { changed: false, notice: String(error.message || error) };
+    }
+  }
+
+  async renameUnknownNode(path, newName) {
+    const source = this.app.vault.getAbstractFileByPath(path);
+    if (!source) return { changed: false, notice: "文件不存在" };
+    const isFile = source.extension === "md";
+    const safe = isFile ? normalizeSafeMarkdownName(newName) : normalizeSafeFolderName(newName);
+    if (!safe) return { changed: false, notice: "名称无效" };
+    const parent = path.split("/").slice(0, -1).join("/");
+    const target = parent + "/" + safe;
+    if (target === path) return { changed: false };
+    if (await this.app.vault.adapter.exists(target)) {
+      return { changed: false, notice: "同名文件已存在" };
+    }
+    try {
+      await this.app.vault.adapter.rename(path, target);
+      this.invalidateUnknownCardIndex();
+      return { changed: true, path: target };
+    } catch (error) {
+      return { changed: false, notice: String(error.message || error) };
+    }
+  }
+
+  async deleteUnknownFolder(path) {
+    const root = this.getUnknownRootPath();
+    if (!root || path === root) return { changed: false, notice: "根目录不能删除" };
+    const node = this.app.vault.getAbstractFileByPath(path);
+    if (!node || !node.children) return { changed: false, notice: "不是文件夹" };
+    const archiveRoot = normalizeVaultPath(root + "/未分类");
+    await this.ensureUnknownFolder(archiveRoot);
+    const name = path.split("/").pop();
+    let target = archiveRoot + "/" + name;
+    let suffix = 2;
+    while (await this.app.vault.adapter.exists(target)) {
+      target = archiveRoot + "/" + name + "-" + suffix;
+      suffix += 1;
+    }
+    try {
+      await this.app.vault.adapter.rename(path, target);
+      this.invalidateUnknownCardIndex();
+      return { changed: true, path: target };
+    } catch (error) {
+      return { changed: false, notice: String(error.message || error) };
+    }
+  }
+
+  async moveUnknownCardToParent(sourceFile, title, targetFile, parentTitle) {
+    if (!sourceFile || !targetFile) return { changed: false, notice: "文件无效" };
+    try {
+      const sourceText = await this.readTextFile(sourceFile);
+      const targetText = sourceFile === targetFile ? sourceText : await this.readTextFile(targetFile);
+      const sourceParsed = parseMarkdownHeadings(sourceText);
+      const source = sourceParsed.headings.find((item) => item.title === title);
+      if (!source) return { changed: false, notice: "卡片不存在" };
+      const section = sourceParsed.lines.slice(source.start, source.end);
+      const targetParsed = parseMarkdownHeadings(targetText);
+      let parentLevel = 0;
+      if (parentTitle) {
+        const parent = targetParsed.headings.find((item) => item.title === parentTitle);
+        if (!parent) return { changed: false, notice: "父级不存在" };
+        parentLevel = parent.level;
+      }
+      const targetLevel = parentLevel + 1;
+      if (targetLevel > 6) return { changed: false, notice: "超过 H6" };
+      const delta = targetLevel - source.level;
+      const adjusted = section.slice();
+      const sectionParsed = parseMarkdownHeadings(section.join("\n"));
+      for (const heading of sectionParsed.headings) {
+        if (heading.level + delta > 6) return { changed: false, notice: "移动后超过 H6" };
+      }
+      adjusted[0] = "#".repeat(targetLevel) + adjusted[0].replace(/^#{1,6}/, "");
+      for (let i = 1; i < adjusted.length; i += 1) {
+        const match = /^(#{1,6})(\s+.*)$/.exec(adjusted[i]);
+        if (match) adjusted[i] = "#".repeat(match[1].length + delta) + match[2];
+      }
+
+      const movingTitles = parseMarkdownHeadings(adjusted.join("\n")).headings.map((item) => item.title);
+      const targetHeadings = targetParsed.headings
+        .filter((item) => !(sourceFile === targetFile && movingTitles.includes(item.title)))
+        .map((item) => item.title);
+      const duplicateTitle = movingTitles.find((item) => targetHeadings.includes(item));
+      if (duplicateTitle) return { changed: false, notice: "目标 Markdown 已有同名标题" };
+      if (sourceFile === targetFile && parentTitle) {
+        const parent = sourceParsed.headings.find((item) => item.title === parentTitle);
+        if (parent && parent.start >= source.start && parent.start < source.end) {
+          return { changed: false, notice: "不能移动到自身子级" };
+        }
+      }
+
+      let nextSource = sourceFile === targetFile ? sourceText : removeHeadingSection(sourceText, title);
+      let nextTarget = sourceFile === targetFile ? removeHeadingSection(sourceText, title) : targetText;
+      const inserted = insertHeadingSection(nextTarget, parentTitle || null, adjusted);
+      if (inserted == null) return { changed: false, notice: "父级不存在" };
+
+      if (sourceFile === targetFile) {
+        await this.writeTextFile(sourceFile, inserted);
+      } else {
+        await this.writeTextFile(sourceFile, nextSource);
+        await this.writeTextFile(targetFile, inserted);
+      }
+      this.invalidateUnknownCardIndex();
+      return { changed: true };
+    } catch (error) {
+      return { changed: false, notice: String(error.message || error) };
+    }
+  }
+
   async loadSettings() {
     let data = null;
     try {
@@ -1883,6 +2357,10 @@ class VocabCapturePlugin extends Plugin {
     this.settings.unknownFilePath =
       String(this.settings.unknownFilePath || "").trim() ||
       DEFAULT_SETTINGS.unknownFilePath;
+    this.legacyUnknownNotePath = String(this.settings.unknownNotePath || "").trim();
+    this.settings.unknownRootFolder =
+      String(this.settings.unknownRootFolder || "").trim() ||
+      DEFAULT_SETTINGS.unknownRootFolder;
     this.settings.unknownNotePath =
       String(this.settings.unknownNotePath || "").trim() ||
       DEFAULT_SETTINGS.unknownNotePath;
@@ -2259,41 +2737,42 @@ class VocabCapturePlugin extends Plugin {
       .filter(Boolean);
     if (!list.length) return false;
 
-    const rawPath = String(this.settings.unknownNotePath || "").trim();
-    if (!rawPath) {
+    const workspace = await this.getUnknownWorkspaceData();
+    if (!workspace.dashboard) {
       if (showNotice) {
-        new Notice("请先在插件设置中填写“不理解词笔记”路径");
-      }
-      return false;
-    }
-    if (isAbsolutePath(rawPath)) {
-      if (showNotice) {
-        new Notice("“不理解词笔记”必须是 vault 内的 Markdown 文件");
+        new Notice("不理解词根目录无效");
       }
       return false;
     }
 
-    try {
-      const existing = await this.readTextFile(rawPath);
-      const result = ensureUnknownHeadingsText(existing, list);
-      if (result.changed) {
-        await this.writeTextFile(rawPath, result.text);
-      }
-      return result.changed;
-    } catch (error) {
-      console.error("[vocab-capture] ensure unknown headings failed", error);
-      if (showNotice) {
-        new Notice(`生成不理解词标题失败：${String(error.message || error)}`);
-      }
-      return false;
+    const index = this.getUnknownCardIndex(workspace);
+    const dashboard = workspace.dashboard;
+    let text = await this.readTextFile(dashboard);
+    let changed = false;
+
+    for (const entry of list) {
+      if (index.has(entry)) continue;
+      const heading = `# ${entry}`;
+      const lines = text.split(/\r?\n/);
+      while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+      if (lines.length) lines.push("");
+      lines.push(heading);
+      lines.push("");
+      text = lines.join("\n");
+      index.set(entry, { title: entry, level: 1, line: lines.length - 2, filePath: dashboard });
+      changed = true;
     }
+
+    if (changed) {
+      await this.writeTextFile(dashboard, text);
+      this.invalidateUnknownCardIndex();
+    }
+    return changed;
   }
 
   async findUnknownHeadingLine(entry) {
-    const rawPath = String(this.settings.unknownNotePath || "").trim();
-    if (!rawPath || isAbsolutePath(rawPath)) return -1;
-    const text = await this.readTextFile(rawPath);
-    return findHeadingLine(text, entry);
+    const card = await this.getUnknownCard(entry);
+    return card ? card.line : -1;
   }
 
   async openUnknownEntry(entry) {
@@ -2301,48 +2780,40 @@ class VocabCapturePlugin extends Plugin {
     if (!normalized) return;
 
     try {
-      await this.ensureUnknownHeadings(this.unknownStore.entries, false);
-      const rawPath = String(this.settings.unknownNotePath || "").trim();
-      if (!rawPath) {
-        new Notice("请先在插件设置中填写“不理解词笔记”路径");
+      let card = await this.getUnknownCard(normalized);
+      if (!card) {
+        await this.ensureUnknownWorkspace();
+        await this.ensureUnknownHeadings(
+          new Set([...(this.unknownStore.entries || []), normalized]),
+          false,
+        );
+        card = await this.getUnknownCard(normalized);
+      }
+      if (!card) {
+        new Notice("未找到对应的不理解的词卡片");
         return;
       }
-      if (isAbsolutePath(rawPath)) {
-        new Notice("“不理解词笔记”必须是 vault 内的 Markdown 文件");
-        return;
-      }
-
-      const notePath = normalizeVaultPath(rawPath);
-      const line = await this.findUnknownHeadingLine(normalized);
-      await this.app.workspace.openLinkText(notePath, "", false);
-      if (line >= 0) {
-        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-        if (view && typeof view.setEphemeralState === "function") {
-          view.setEphemeralState({ line });
-        }
+      await this.app.workspace.openLinkText(card.filePath, "", false);
+      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (view && typeof view.setEphemeralState === "function") {
+        view.setEphemeralState({ line: card.line });
       }
     } catch (error) {
-      new Notice(`打开不理解词笔记失败：${String(error.message || error)}`);
+      new Notice(`打开不理解的词失败：${String(error.message || error)}`);
     }
   }
 
   async openUnknownNote() {
-    await this.ensureUnknownHeadings(this.unknownStore.entries, true);
-    const rawPath = String(this.settings.unknownNotePath || "").trim();
-    if (!rawPath) {
-      new Notice("请先在插件设置中填写“不理解词笔记”路径");
-      return;
-    }
-    if (isAbsolutePath(rawPath)) {
-      new Notice("“不理解词笔记”必须是 vault 内的 Markdown 文件");
-      return;
-    }
-
     try {
-      const notePath = normalizeVaultPath(rawPath);
-      await this.app.workspace.openLinkText(notePath, "", false);
+      await this.ensureUnknownWorkspace();
+      const dashboard = this.getDefaultUnknownNotePath();
+      if (!dashboard) {
+        new Notice("不理解词根目录无效");
+        return;
+      }
+      await this.app.workspace.openLinkText(dashboard, "", false);
     } catch (error) {
-      new Notice(`打开不理解词笔记失败：${String(error.message || error)}`);
+      new Notice(`打开不理解的词失败：${String(error.message || error)}`);
     }
   }
 
@@ -2353,44 +2824,51 @@ class VocabCapturePlugin extends Plugin {
     const token = (this.unknownUiRefreshToken || 0) + 1;
     this.unknownUiRefreshToken = token;
 
-    let text;
+    let workspace;
     try {
-      text = await this.readTextFile(notePath);
+      workspace = await this.getUnknownWorkspaceData();
     } catch (error) {
       return;
     }
     if (token !== this.unknownUiRefreshToken) return;
+    if (!workspace.dashboard) return;
 
-    const structure = parseUnknownNote(text);
+    const state = this.unknownUiState || {};
+    if (!state.expanded || !(state.expanded instanceof Set)) {
+      state.expanded = new Set([workspace.root]);
+    }
+    if (!state.selectedFile || !workspace.fileMap.has(state.selectedFile)) {
+      state.selectedFile = workspace.dashboard;
+    }
+    if (typeof state.managerOpen !== "boolean") state.managerOpen = false;
+    if (typeof state.search !== "string") state.search = "";
+    if (typeof state.folder !== "string") state.folder = workspace.root;
+    this.unknownUiState = state;
+
     const signature = JSON.stringify({
-      categories: structure.categories.map((item) => item.name),
-      cards: structure.cards.map((item) => ({
-        name: item.name,
-        category: item.category,
+      files: workspace.files.map((file) => ({
+        path: file.path,
+        headings: file.headings.map((heading) => ({ title: heading.title, level: heading.level })),
       })),
-      expanded: Boolean(this.unknownUiState && this.unknownUiState.expanded),
-      selectedCategory: this.unknownUiState
-        ? this.unknownUiState.selectedCategory
-        : "未分类",
-      confirmDelete: this.unknownUiState
-        ? this.unknownUiState.confirmDelete
-        : null,
+      managerOpen: state.managerOpen,
+      selectedFile: state.selectedFile,
+      selectedHeading: state.selectedHeading || null,
+      expanded: Array.from(state.expanded),
+      folder: state.folder,
     });
+
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
       if (!(view instanceof MarkdownView)) continue;
-      if (!view.file || view.file.path !== notePath) continue;
+      if (!view.file || view.file.path !== workspace.dashboard) continue;
 
       const preview = getPreviewElement(view);
       const host = preview
-        ? view.containerEl.querySelector(".markdown-reading-view") ||
-          preview.parentElement
+        ? view.containerEl.querySelector(".markdown-reading-view") || preview.parentElement
         : view.containerEl.querySelector(".markdown-source-view");
       if (!host) continue;
 
-      let panel = host.querySelector(
-        ":scope > .vocab-capture-note-ui",
-      );
+      let panel = host.querySelector(":scope > .vocab-capture-note-ui");
       if (!panel) {
         panel = document.createElement("div");
         panel.className = "vocab-capture-note-ui";
@@ -2398,7 +2876,7 @@ class VocabCapturePlugin extends Plugin {
       }
       if (panel.dataset.uiSignature === signature) continue;
       panel.dataset.uiSignature = signature;
-      this.renderUnknownNoteUi(panel, structure);
+      this.renderUnknownFolderUi(panel, workspace, state);
     }
   }
 
@@ -2957,6 +3435,615 @@ class VocabCapturePlugin extends Plugin {
       if (!finished) void finish(false);
     });
   }
+
+  renderUnknownFolderUi(panel, workspace, state) {
+    if (!panel) return;
+    panel.replaceChildren();
+
+    const el = (tag, className, text) => {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text != null) node.textContent = text;
+      return node;
+    };
+    const button = (text, className, onClick, title) => {
+      const node = el("button", className, text);
+      node.type = "button";
+      if (title) node.title = title;
+      node.addEventListener("click", (event) => {
+        event.stopPropagation();
+        onClick();
+      });
+      return node;
+    };
+    const render = () => this.renderUnknownFolderUi(panel, workspace, state);
+    const refresh = async () => {
+      await this.rerenderUnknownNoteViews();
+      await this.refreshUnknownNoteUi();
+    };
+    const selectedFile = workspace.fileMap.get(state.selectedFile) || workspace.files[0] || null;
+    const selectedHeadings = selectedFile ? selectedFile.headings : [];
+    const totalCards = workspace.files.reduce((sum, file) => sum + file.headings.length, 0);
+    const folderCount = Math.max(0, this.countUnknownFolders(workspace.tree) - 1);
+
+    const compact = el("div", "vocab-capture-folder-ui__compact");
+    const compactLeft = el("div", "vocab-capture-folder-ui__compact-left");
+    compactLeft.appendChild(el("span", "vocab-capture-folder-ui__title", "不理解词"));
+    compactLeft.appendChild(
+      el(
+        "span",
+        "vocab-capture-folder-ui__meta",
+        `${totalCards} 条 · ${folderCount} 个文件夹 · ${workspace.files.length} 个 Markdown`,
+      ),
+    );
+    compact.appendChild(compactLeft);
+    const compactActions = el("div", "vocab-capture-folder-ui__compact-actions");
+    compactActions.appendChild(
+      button("新建文件夹", "vocab-capture-folder-ui__quiet", () => {
+        this.promptUnknownUi(panel, "新建文件夹", "文件夹名", "", async (value) => {
+          const parent = this.getUnknownSelectedFolder(workspace, state);
+          const result = await this.addUnknownFolder(parent, value);
+          if (!result.changed) new Notice(result.notice || "新建文件夹失败");
+          state.expanded.add(parent);
+          await refresh();
+        });
+      }),
+    );
+    compactActions.appendChild(
+      button("新建 Markdown", "vocab-capture-folder-ui__quiet", () => {
+        this.promptUnknownUi(panel, "新建 Markdown", "文件名", "新文件.md", async (value) => {
+          const folder = this.getUnknownSelectedFolder(workspace, state);
+          const result = await this.addUnknownMarkdown(folder, value);
+          if (!result.changed) {
+            new Notice(result.notice || "新建 Markdown 失败");
+          } else {
+            state.selectedFile = result.path;
+            state.folder = folder;
+          }
+          await refresh();
+        });
+      }),
+    );
+    compactActions.appendChild(
+      button(state.managerOpen ? "收起" : "管理", "vocab-capture-folder-ui__primary", () => {
+        state.managerOpen = !state.managerOpen;
+        render();
+      }),
+    );
+    compact.appendChild(compactActions);
+    panel.appendChild(compact);
+
+    if (!state.managerOpen) return;
+
+    const manager = el("div", "vocab-capture-folder-ui__manager");
+    const head = el("div", "vocab-capture-folder-ui__head");
+    head.appendChild(el("span", "vocab-capture-folder-ui__head-title", "文件夹与卡片"));
+    head.appendChild(
+      el(
+        "span",
+        "vocab-capture-folder-ui__head-sub",
+        "文件夹只负责分类；卡片只能写入 Markdown",
+      ),
+    );
+    const search = el("input", "vocab-capture-folder-ui__search");
+    search.type = "search";
+    search.placeholder = "搜索文件夹、Markdown、卡片";
+    search.value = state.search;
+    head.appendChild(search);
+    head.appendChild(
+      button("关闭", "vocab-capture-folder-ui__close", () => {
+        state.managerOpen = false;
+        render();
+      }),
+    );
+    manager.appendChild(head);
+
+    const body = el("div", "vocab-capture-folder-ui__body");
+    const left = el("aside", "vocab-capture-folder-ui__left");
+    const leftHead = el("div", "vocab-capture-folder-ui__section-head");
+    leftHead.appendChild(el("span", "vocab-capture-folder-ui__section-title", "文件夹 / Markdown"));
+    leftHead.appendChild(
+      button("新建文件夹", "vocab-capture-folder-ui__section-add", () => {
+        this.promptUnknownUi(panel, "新建文件夹", "文件夹名", "", async (value) => {
+          const parent = this.getUnknownSelectedFolder(workspace, state);
+          const result = await this.addUnknownFolder(parent, value);
+          if (!result.changed) new Notice(result.notice || "新建文件夹失败");
+          state.expanded.add(parent);
+          await refresh();
+        });
+      }),
+    );
+    left.appendChild(leftHead);
+
+    const tree = el("div", "vocab-capture-folder-ui__tree");
+    const query = String(state.search || "").trim().toLocaleLowerCase();
+    const matches = (node) => {
+      if (!query) return true;
+      if (node.name && node.name.toLocaleLowerCase().includes(query)) return true;
+      if (node.type === "file") {
+        const file = workspace.fileMap.get(node.path);
+        return Boolean(file && file.headings.some((heading) => heading.title.toLocaleLowerCase().includes(query)));
+      }
+      return (node.children || []).some(matches);
+    };
+    const addNode = (node, depth) => {
+      if (!matches(node)) return;
+      const row = el(
+        "div",
+        "vocab-capture-folder-ui__row" +
+          (node.type === "file" && node.path === state.selectedFile ? " is-selected" : "") +
+          (node.type === "folder" && node.path === state.folder ? " is-folder-selected" : ""),
+      );
+      row.style.paddingLeft = `${5 + depth * 16}px`;
+      row.dataset.path = node.path;
+      row.dataset.type = node.type;
+      row.appendChild(el("span", "vocab-capture-folder-ui__name", node.name));
+      row.appendChild(el("span", "vocab-capture-folder-ui__count", String(node.count || 0)));
+      if (node.type === "folder" && node.path !== workspace.root) {
+        const expanded = state.expanded.has(node.path);
+        row.appendChild(
+          button(expanded ? "收起" : "展开", "vocab-capture-folder-ui__toggle", () => {
+            if (expanded) state.expanded.delete(node.path);
+            else state.expanded.add(node.path);
+            render();
+          }),
+        );
+      }
+      row.addEventListener("click", () => {
+        state.folder = node.type === "folder" ? node.path : node.path.split("/").slice(0, -1).join("/");
+        if (node.type === "file") {
+          state.selectedFile = node.path;
+          state.selectedHeading = null;
+        } else if (node.path === workspace.root) {
+          state.expanded.add(node.path);
+        } else {
+          if (state.expanded.has(node.path)) state.expanded.delete(node.path);
+          else state.expanded.add(node.path);
+        }
+        render();
+      });
+      row.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (node.type === "file") {
+          this.showUnknownFileContext(panel, event, workspace, state, node, refresh);
+        } else {
+          this.showUnknownFolderContext(panel, event, workspace, state, node, refresh);
+        }
+      });
+      tree.appendChild(row);
+      if (node.type === "folder" && (state.expanded.has(node.path) || query)) {
+        for (const child of node.children || []) addNode(child, depth + 1);
+      }
+    };
+    addNode(workspace.tree, 0);
+    left.appendChild(tree);
+    left.appendChild(
+      el(
+        "div",
+        "vocab-capture-folder-ui__tree-note",
+        "文件夹不会自动生成 Markdown；右键文件夹或 Markdown 可管理。",
+      ),
+    );
+    body.appendChild(left);
+
+    const right = el("section", "vocab-capture-folder-ui__right");
+    const breadcrumb = el("div", "vocab-capture-folder-ui__breadcrumb");
+    const parts = selectedFile ? selectedFile.path.split("/") : [];
+    parts.forEach((part, index) => {
+      const span = el("span", "", part);
+      if (index === parts.length - 1) {
+        span.className = "vocab-capture-folder-ui__crumb-current";
+      }
+      breadcrumb.appendChild(span);
+      if (index < parts.length - 1) breadcrumb.appendChild(el("span", "vocab-capture-folder-ui__sep", "/"));
+    });
+    right.appendChild(breadcrumb);
+
+    const rightHead = el("div", "vocab-capture-folder-ui__right-head");
+    rightHead.appendChild(el("span", "vocab-capture-folder-ui__right-title", selectedFile ? selectedFile.name : "未选择 Markdown"));
+    rightHead.appendChild(el("span", "vocab-capture-folder-ui__right-count", `${selectedHeadings.length} 个卡片`));
+    const actions = el("div", "vocab-capture-folder-ui__right-actions");
+    actions.appendChild(
+      button(
+        "移动卡片",
+        "vocab-capture-folder-ui__primary",
+        () => {
+          if (!selectedFile || !state.selectedHeading) {
+            new Notice("请先选择卡片");
+            return;
+          }
+          const heading = selectedHeadings.find((item) => item.title === state.selectedHeading);
+          if (!heading) return;
+          this.openUnknownMoveUi(panel, workspace, state, selectedFile, heading, refresh);
+        },
+      ),
+    );
+    actions.appendChild(
+      button("新建 Markdown", "vocab-capture-folder-ui__secondary", () => {
+        const folder = selectedFile
+          ? selectedFile.path.split("/").slice(0, -1).join("/")
+          : state.folder;
+        this.promptUnknownUi(panel, "新建 Markdown", "文件名", "新文件.md", async (value) => {
+          const result = await this.addUnknownMarkdown(folder, value);
+          if (!result.changed) new Notice(result.notice || "新建 Markdown 失败");
+          else state.selectedFile = result.path;
+          await refresh();
+        });
+      }),
+    );
+    rightHead.appendChild(actions);
+    right.appendChild(rightHead);
+    right.appendChild(
+      el(
+        "div",
+        "vocab-capture-folder-ui__hint",
+        "选中卡片后点击“移动卡片”；标题层级由目标父级自动决定。",
+      ),
+    );
+
+    const headingList = el("div", "vocab-capture-folder-ui__headings");
+    const visibleHeadings = selectedHeadings.filter(
+      (heading) => !query || heading.title.toLocaleLowerCase().includes(query),
+    );
+    if (!visibleHeadings.length) {
+      headingList.appendChild(
+        el(
+          "div",
+          "vocab-capture-folder-ui__empty",
+          selectedHeadings.length ? "没有匹配的卡片。" : "该 Markdown 暂无卡片。",
+        ),
+      );
+    }
+    for (const heading of visibleHeadings) {
+      const row = el(
+        "div",
+        "vocab-capture-folder-ui__heading" +
+          (heading.title === state.selectedHeading ? " is-selected" : ""),
+      );
+      row.style.marginLeft = `${(heading.level - 1) * 18}px`;
+      row.appendChild(
+        el("span", `vocab-capture-folder-ui__level is-h${heading.level}`, `H${heading.level}`),
+      );
+      const main = el("div", "vocab-capture-folder-ui__heading-main");
+      main.appendChild(el("span", "vocab-capture-folder-ui__heading-title", heading.title));
+      row.appendChild(main);
+      row.addEventListener("click", () => {
+        state.selectedHeading = heading.title;
+        render();
+      });
+      row.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        state.selectedHeading = heading.title;
+        this.showUnknownCardContext(panel, event, workspace, state, selectedFile, heading, refresh);
+      });
+      headingList.appendChild(row);
+    }
+    right.appendChild(headingList);
+    right.appendChild(
+      el(
+        "div",
+        "vocab-capture-folder-ui__right-foot",
+        "卡片只能移动，不能在这里新建；F2 初次收录写入未分类.md 的 H1。",
+      ),
+    );
+    body.appendChild(right);
+    manager.appendChild(body);
+
+    const foot = el("div", "vocab-capture-folder-ui__foot");
+    foot.appendChild(
+      el("span", "", "删除文件夹时整个分支移动到未分类，不删除 Markdown 或卡片内容。"),
+    );
+    foot.appendChild(el("span", "vocab-capture-folder-ui__foot-right", `${totalCards} 条`));
+    manager.appendChild(foot);
+    panel.appendChild(manager);
+
+    search.addEventListener("input", () => {
+      state.search = search.value;
+      const caret = search.selectionStart;
+      render();
+      const next = panel.querySelector(".vocab-capture-folder-ui__search");
+      if (next) {
+        next.focus();
+        try { next.setSelectionRange(caret, caret); } catch (error) {}
+      }
+    });
+  }
+
+  countUnknownFolders(node) {
+    if (!node) return 0;
+    if (node.type !== "folder") return 0;
+    return 1 + (node.children || []).reduce((sum, child) => sum + this.countUnknownFolders(child), 0);
+  }
+
+  getUnknownSelectedFolder(workspace, state) {
+    if (state.folder && workspace.fileMap.has(state.folder)) {
+      return state.folder.split("/").slice(0, -1).join("/");
+    }
+    if (state.folder) return state.folder;
+    if (state.selectedFile) return state.selectedFile.split("/").slice(0, -1).join("/");
+    return workspace.root;
+  }
+
+  promptUnknownUi(panel, title, label, value, onConfirm) {
+    const layer = document.createElement("div");
+    layer.className = "vocab-capture-folder-ui__modal-layer";
+    const modal = document.createElement("div");
+    modal.className = "vocab-capture-folder-ui__modal";
+    const heading = document.createElement("div");
+    heading.className = "vocab-capture-folder-ui__modal-title";
+    heading.textContent = title;
+    modal.appendChild(heading);
+    const field = document.createElement("label");
+    field.className = "vocab-capture-folder-ui__field";
+    field.appendChild(document.createTextNode(label));
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = value || "";
+    field.appendChild(input);
+    modal.appendChild(field);
+    const actions = document.createElement("div");
+    actions.className = "vocab-capture-folder-ui__modal-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "vocab-capture-folder-ui__secondary";
+    cancel.textContent = "取消";
+    cancel.addEventListener("click", () => layer.remove());
+    const ok = document.createElement("button");
+    ok.type = "button";
+    ok.className = "vocab-capture-folder-ui__primary";
+    ok.textContent = "确定";
+    ok.addEventListener("click", async () => {
+      const next = input.value.trim();
+      if (!next) return;
+      layer.remove();
+      await onConfirm(next);
+    });
+    actions.appendChild(cancel);
+    actions.appendChild(ok);
+    modal.appendChild(actions);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void ok.click();
+      }
+      if (event.key === "Escape") layer.remove();
+    });
+    layer.appendChild(modal);
+    panel.appendChild(layer);
+    window.setTimeout(() => input.focus(), 0);
+  }
+
+  showUnknownFolderContext(panel, event, workspace, state, node, refresh) {
+    this.openUnknownContextMenu(panel, event, [
+      ["新建子文件夹", () => {
+        this.promptUnknownUi(panel, "新建子文件夹", "文件夹名", "", async (value) => {
+          const result = await this.addUnknownFolder(node.path, value);
+          if (!result.changed) new Notice(result.notice || "新建失败");
+          state.expanded.add(node.path);
+          await refresh();
+        });
+      }],
+      ["新建 Markdown", () => {
+        this.promptUnknownUi(panel, "新建 Markdown", "文件名", "新文件.md", async (value) => {
+          const result = await this.addUnknownMarkdown(node.path, value);
+          if (!result.changed) new Notice(result.notice || "新建失败");
+          else state.selectedFile = result.path;
+          await refresh();
+        });
+      }],
+      ...(node.path === workspace.root
+        ? []
+        : [
+            ["重命名文件夹", () => {
+              this.promptUnknownUi(panel, "重命名文件夹", "新名称", node.name, async (value) => {
+                const result = await this.renameUnknownNode(node.path, value);
+                if (!result.changed) new Notice(result.notice || "重命名失败");
+                await refresh();
+              });
+            }],
+            ["删除文件夹（移至未分类）", () => {
+              if (!window.confirm(`删除文件夹“${node.name}”？整个分支会移动到未分类，内容不会删除。`)) return;
+              void this.deleteUnknownFolder(node.path).then(async (result) => {
+                if (!result.changed) new Notice(result.notice || "删除失败");
+                await refresh();
+              });
+            }],
+          ]),
+    ]);
+  }
+
+  showUnknownFileContext(panel, event, workspace, state, node, refresh) {
+    this.openUnknownContextMenu(panel, event, [
+      ["打开", () => {
+        state.selectedFile = node.path;
+        state.folder = node.path.split("/").slice(0, -1).join("/");
+        state.selectedHeading = null;
+        this.renderUnknownFolderUi(panel, workspace, state);
+      }],
+      ["重命名 Markdown", () => {
+        this.promptUnknownUi(panel, "重命名 Markdown", "新名称", node.name, async (value) => {
+          const result = await this.renameUnknownNode(node.path, value);
+          if (!result.changed) new Notice(result.notice || "重命名失败");
+          await refresh();
+        });
+      }],
+    ]);
+  }
+
+  showUnknownCardContext(panel, event, workspace, state, file, heading, refresh) {
+    this.openUnknownContextMenu(panel, event, [
+      ["移动卡片", () => {
+        this.openUnknownMoveUi(panel, workspace, state, file, heading, refresh);
+      }],
+    ]);
+  }
+
+  openUnknownContextMenu(panel, event, items) {
+    panel.querySelectorAll(".vocab-capture-folder-ui__context").forEach((node) => node.remove());
+    const menu = document.createElement("div");
+    menu.className = "vocab-capture-folder-ui__context";
+    for (const [label, action] of items) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.addEventListener("click", () => {
+        menu.remove();
+        action();
+      });
+      menu.appendChild(button);
+    }
+    menu.style.left = `${event.clientX}px`;
+    menu.style.top = `${event.clientY}px`;
+    panel.appendChild(menu);
+    const close = (next) => {
+      if (!menu.contains(next.target)) {
+        menu.remove();
+        document.removeEventListener("click", close);
+      }
+    };
+    window.setTimeout(() => document.addEventListener("click", close), 0);
+  }
+
+  openUnknownMoveUi(panel, workspace, state, sourceFile, sourceHeading, refresh) {
+    const layer = document.createElement("div");
+    layer.className = "vocab-capture-folder-ui__modal-layer";
+    const modal = document.createElement("div");
+    modal.className = "vocab-capture-folder-ui__modal is-wide";
+    modal.appendChild(
+      Object.assign(document.createElement("div"), {
+        className: "vocab-capture-folder-ui__modal-title",
+        textContent: "移动卡片",
+      }),
+    );
+    modal.appendChild(
+      Object.assign(document.createElement("div"), {
+        className: "vocab-capture-folder-ui__modal-sub",
+        textContent: "只能移动已有卡片；选择目标 Markdown 与父级后自动重算标题级别。",
+      }),
+    );
+    const source = document.createElement("div");
+    source.className = "vocab-capture-folder-ui__path";
+    source.textContent = `${sourceFile.path} · ${sourceHeading.title}（H${sourceHeading.level}）`;
+    modal.appendChild(source);
+
+    const search = document.createElement("input");
+    search.type = "search";
+    search.placeholder = "搜索目标 Markdown 或父级";
+    search.className = "vocab-capture-folder-ui__search is-modal";
+    modal.appendChild(search);
+
+    const fileLabel = document.createElement("label");
+    fileLabel.className = "vocab-capture-folder-ui__field";
+    fileLabel.appendChild(document.createTextNode("目标 Markdown"));
+    const fileSelect = document.createElement("select");
+    fileLabel.appendChild(fileSelect);
+    modal.appendChild(fileLabel);
+
+    const parentLabel = document.createElement("label");
+    parentLabel.className = "vocab-capture-folder-ui__field";
+    parentLabel.appendChild(document.createTextNode("目标父级"));
+    const parentSelect = document.createElement("select");
+    parentLabel.appendChild(parentSelect);
+    modal.appendChild(parentLabel);
+
+    const preview = document.createElement("div");
+    preview.className = "vocab-capture-folder-ui__level-preview";
+    modal.appendChild(preview);
+
+    const actions = document.createElement("div");
+    actions.className = "vocab-capture-folder-ui__modal-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "vocab-capture-folder-ui__secondary";
+    cancel.textContent = "取消";
+    cancel.addEventListener("click", () => layer.remove());
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.className = "vocab-capture-folder-ui__primary";
+    confirm.textContent = "移动卡片";
+    actions.appendChild(cancel);
+    actions.appendChild(confirm);
+    modal.appendChild(actions);
+    layer.appendChild(modal);
+    panel.appendChild(layer);
+
+    const files = workspace.files.slice();
+    const paintFiles = () => {
+      const query = search.value.trim().toLocaleLowerCase();
+      fileSelect.innerHTML = "";
+      for (const file of files) {
+        if (query && !file.path.toLocaleLowerCase().includes(query)) continue;
+        const option = document.createElement("option");
+        option.value = file.path;
+        option.textContent = file.path;
+        fileSelect.appendChild(option);
+      }
+      if (!fileSelect.options.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "没有匹配的 Markdown";
+        fileSelect.appendChild(option);
+      }
+      fileSelect.value = files.some((file) => file.path === state.selectedFile) &&
+        !query
+        ? state.selectedFile
+        : fileSelect.options[0].value;
+      paintParents();
+    };
+    const paintParents = () => {
+      parentSelect.innerHTML = "";
+      const file = workspace.fileMap.get(fileSelect.value);
+      const md = document.createElement("option");
+      md.value = "";
+      md.textContent = "Markdown 文件（卡片 H1）";
+      parentSelect.appendChild(md);
+      for (const heading of file ? file.headings : []) {
+        if (heading.level >= 6) continue;
+        if (file.path === sourceFile.path && heading.title === sourceHeading.title) continue;
+        const option = document.createElement("option");
+        option.value = heading.title;
+        option.textContent = `H${heading.level} ${heading.title}（卡片 H${heading.level + 1}）`;
+        parentSelect.appendChild(option);
+      }
+      paintPreview();
+    };
+    const paintPreview = () => {
+      const parent = parentSelect.value;
+      const level = parent ? (workspace.fileMap.get(fileSelect.value)?.headings.find((item) => item.title === parent)?.level || 0) + 1 : 1;
+      preview.textContent = `移动后：H${level}`;
+    };
+    search.addEventListener("input", paintFiles);
+    fileSelect.addEventListener("change", paintParents);
+    parentSelect.addEventListener("change", paintPreview);
+    paintFiles();
+
+    confirm.addEventListener("click", async () => {
+      const targetFile = fileSelect.value;
+      if (!targetFile) return;
+      const result = await this.moveUnknownCardToParent(
+        sourceFile.path,
+        sourceHeading.title,
+        targetFile,
+        parentSelect.value || null,
+      );
+      if (!result.changed) {
+        new Notice(result.notice || "移动失败");
+        return;
+      }
+      layer.remove();
+      state.selectedFile = targetFile;
+      state.selectedHeading = sourceHeading.title;
+      await refresh();
+    });
+    window.setTimeout(() => search.focus(), 0);
+  }
+
+  askUnknownName(message, fallback) {
+    return window.prompt(message, fallback || "");
+  }
+
 
   async addUnknownCategory(name) {
     const notePath = this.getVaultUnknownNotePath();
@@ -3658,17 +4745,20 @@ class VocabCaptureSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("不理解词笔记")
+      .setName("不理解词根目录")
       .setDesc(
-        "vault 内的 Markdown 文件。每条不理解词会生成同名标题，点击正文中的不理解词跳转到对应标题。",
+        "不理解词的根文件夹。未分类.md 直接放在该目录下；分类使用真实子文件夹，Markdown 需在管理界面手动创建。",
       )
       .addText((text) => {
         text
-          .setPlaceholder(DEFAULT_SETTINGS.unknownNotePath)
-          .setValue(this.plugin.settings.unknownNotePath)
+          .setPlaceholder(DEFAULT_SETTINGS.unknownRootFolder)
+          .setValue(this.plugin.settings.unknownRootFolder)
           .onChange((value) => {
+            this.plugin.settings.unknownRootFolder =
+              value.trim() || DEFAULT_SETTINGS.unknownRootFolder;
             this.plugin.settings.unknownNotePath =
-              value.trim() || DEFAULT_SETTINGS.unknownNotePath;
+              this.plugin.settings.unknownRootFolder.replace(/\/$/, "") +
+              "/未分类.md";
             void this.plugin.saveSettings();
 
             if (this.unknownNoteTimer) {
@@ -3676,10 +4766,12 @@ class VocabCaptureSettingTab extends PluginSettingTab {
             }
             this.unknownNoteTimer = window.setTimeout(() => {
               this.unknownNoteTimer = null;
-              void this.plugin.ensureUnknownHeadings(
-                this.plugin.unknownStore.entries,
-                true,
-              );
+              void this.plugin.ensureUnknownWorkspace().then(() => {
+                return this.plugin.ensureUnknownHeadings(
+                  this.plugin.unknownStore.entries,
+                  true,
+                );
+              });
             }, 600);
           });
       });
@@ -3965,6 +5057,12 @@ module.exports.__test = {
   findUnknownEntryForText,
   findUnknownEntryAtOffset,
   parseUnknownNote,
+  parseMarkdownHeadings,
+  convertFlatUnknownNoteToCards,
+  normalizeSafeFolderName,
+  normalizeSafeMarkdownName,
+  insertHeadingSection,
+  removeHeadingSection,
   addUnknownCategoryText,
   deleteUnknownCategoryText,
   moveUnknownCardText,

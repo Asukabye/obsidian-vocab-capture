@@ -1,6 +1,6 @@
 {
   "name": "obsidian-vocab-capture",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "private": true,
   "description": "Obsidian plugin: collect/highlight vocabulary and separately collect/highlight unknown words or passages.",
   "scripts": {

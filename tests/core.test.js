@@ -33,6 +33,12 @@ const {
   findUnknownEntryForText,
   findUnknownEntryAtOffset,
   parseUnknownNote,
+  parseMarkdownHeadings,
+  convertFlatUnknownNoteToCards,
+  normalizeSafeFolderName,
+  normalizeSafeMarkdownName,
+  insertHeadingSection,
+  removeHeadingSection,
   addUnknownCategoryText,
   deleteUnknownCategoryText,
   moveUnknownCardText,
@@ -793,4 +799,32 @@ test("编辑视图: 英文短语跨行、中文词语、行内代码跳过", () 
     ranges.map((range) => text.slice(range.from, range.to)),
     ["give up", "人工智能", "give\nup"],
   );
+});
+
+
+test("层级: 解析 Markdown 标题区间并保留父级结构", () => {
+  const parsed = parseMarkdownHeadings("# os\n\n## os.path\n\n## 路径操作\n\n### os.path.join\n\n# sys\n");
+  assert.deepEqual(
+    parsed.headings.map((item) => [item.title, item.level]),
+    [["os", 1], ["os.path", 2], ["路径操作", 2], ["os.path.join", 3], ["sys", 1]],
+  );
+  assert.equal(parsed.headings[0].end, 8);
+});
+
+test("层级: 扁平旧笔记迁移为 H1 卡片", () => {
+  const converted = convertFlatUnknownNoteToCards("# 未分类\n\n## hello\n\n释义\n\n## world\n");
+  assert.equal(converted, "# hello\n\n释义\n\n# world\n");
+});
+
+test("层级: 插入卡片到父级子树末尾并重算级别", () => {
+  const inserted = insertHeadingSection("# os\n\n## os.path\n", "os", ["## os.environ", "", "环境变量"]);
+  assert.equal(inserted, "# os\n\n## os.path\n\n## os.environ\n\n环境变量\n");
+  const removed = removeHeadingSection(inserted, "os.path");
+  assert.equal(removed, "# os\n\n## os.environ\n\n环境变量\n");
+});
+
+test("层级: 文件夹名和 Markdown 名安全化", () => {
+  assert.equal(normalizeSafeFolderName(" C/C++: "), "C C++");
+  assert.equal(normalizeSafeMarkdownName("os"), "os.md");
+  assert.equal(normalizeSafeMarkdownName("a/b.md"), "a b.md");
 });
