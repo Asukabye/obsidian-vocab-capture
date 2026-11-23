@@ -1,7 +1,7 @@
 {
   "id": "vocab-capture",
   "name": "生词捕获",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "minAppVersion": "1.5.0",
   "description": "不理解词改为真实文件夹分类与 Markdown 标题层级；管理台支持移动已有卡片。",
   "author": "DeepSeek Harness",

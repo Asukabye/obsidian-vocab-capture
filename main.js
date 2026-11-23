@@ -2111,6 +2111,20 @@ class VocabCapturePlugin extends Plugin {
       });
     }
 
+    if (dashboard && !files.some((file) => file.path === dashboard)) {
+      try {
+        const dashboardText = await this.readTextFile(dashboard);
+        const parsed = parseMarkdownHeadings(dashboardText);
+        files.push({
+          path: dashboard,
+          name: dashboard.split("/").pop(),
+          basename: dashboard.split("/").pop().replace(/\.md$/i, ""),
+          headings: parsed.headings,
+          text: dashboardText,
+        });
+      } catch (error) {}
+    }
+
     const fileMap = new Map(files.map((file) => [file.path, file]));
     let tree = null;
     try {
@@ -2162,6 +2176,23 @@ class VocabCapturePlugin extends Plugin {
           count: file.headings.length,
         })),
       };
+    }
+
+    if (tree && dashboard && fileMap.has(dashboard)) {
+      const hasDashboard = (node) => {
+        if (!node) return false;
+        if (node.type === "file" && node.path === dashboard) return true;
+        return (node.children || []).some(hasDashboard);
+      };
+      if (!hasDashboard(tree)) {
+        tree.children = tree.children || [];
+        tree.children.unshift({
+          name: dashboard.split("/").pop(),
+          path: dashboard,
+          type: "file",
+          count: fileMap.get(dashboard).headings.length,
+        });
+      }
     }
 
     return { root, dashboard, files, fileMap, tree };

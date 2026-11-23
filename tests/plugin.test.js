@@ -503,3 +503,39 @@ test("插件: 旧设置加载后补齐不理解词默认值", async () => {
   assert.equal(plugin.settings.unknownHotkey.key, "Q");
   assert.deepEqual(plugin.settings.unknownHotkey.modifiers, ["Alt"]);
 });
+
+
+test("插件: 未分类.md 直接位于不理解词根目录", async () => {
+  const fake = makeFakeVault();
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    unknownRootFolder: "不理解的词",
+    unknownNotePath: "不理解的词/未分类.md",
+  };
+  plugin.app = { vault: fake.vault };
+  plugin.saveSettings = async () => {};
+  await plugin.ensureUnknownWorkspace();
+  assert.ok(fake.files.has("不理解的词/未分类.md"));
+  assert.equal(fake.dirs.has("不理解的词/未分类"), false);
+});
+
+test("插件: 移动已有卡片到父级并自动计算级别", async () => {
+  const fake = makeFakeVault(
+    new Map([["不理解的词/未分类.md", "# parent\n\n## child\n\n# target\n"]]),
+    new Set(["不理解的词"]),
+  );
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    unknownRootFolder: "不理解的词",
+    unknownNotePath: "不理解的词/未分类.md",
+  };
+  plugin.app = { vault: fake.vault };
+  const result = await plugin.moveUnknownCardToParent(
+    "不理解的词/未分类.md",
+    "child",
+    "不理解的词/未分类.md",
+    "target",
+  );
+  assert.equal(result.changed, true);
+  assert.equal(fake.files.get("不理解的词/未分类.md"), "# parent\n\n# target\n\n## child\n");
+});
