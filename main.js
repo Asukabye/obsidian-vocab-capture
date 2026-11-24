@@ -18,7 +18,7 @@ const DEFAULT_SETTINGS = {
   hotkey: { modifiers: ["Alt"], key: "W" },
   unknownFilePath: "不理解的词.txt",
   unknownRootFolder: "不理解的词",
-  unknownNotePath: "不理解的词/未分类.md",
+  unknownNotePath: "不理解的词/未分类/未分类.md",
   unknownHotkey: { modifiers: ["Alt"], key: "Q" },
   highlightColor: "rgba(64, 190, 160, 0.28)",
   unknownHighlightColor: "rgba(236, 144, 56, 0.36)",
@@ -126,12 +126,15 @@ function classifyEntry(entry) {
 
 function normalizeUnknownSelection(raw) {
   if (typeof raw !== "string") return "";
-  return raw
+  let value = raw
     .replace(/\r\n?|\n/g, " ")
     .replace(/\u00a0/g, " ")
     .replace(/[\u200b-\u200d\ufeff]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+  const code = /^(`+)([\s\S]*?)\1$/.exec(value);
+  if (code) value = code[2].trim();
+  return value;
 }
 
 function countUnknownLines(text) {
@@ -159,7 +162,7 @@ function appendUnknownRecord(existing, entry) {
 
   const lines = current
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map((line) => normalizeUnknownSelection(line))
     .filter(Boolean);
   if (lines.includes(normalized)) {
     return { text: current, added: false };
@@ -2018,7 +2021,7 @@ class VocabCapturePlugin extends Plugin {
     const root = this.getUnknownRootPath();
     if (!root) return null;
     try {
-      return normalizeVaultPath(root + "/未分类.md");
+      return normalizeVaultPath(root + "/未分类/未分类.md");
     } catch (error) {
       return null;
     }
@@ -2041,12 +2044,17 @@ class VocabCapturePlugin extends Plugin {
     const root = this.getUnknownRootPath();
     if (!root) return false;
     await this.ensureUnknownFolder(root);
+    await this.ensureUnknownFolder(root + "/未分类");
 
     const dashboard = this.getDefaultUnknownNotePath();
     if (!dashboard) return false;
     this.settings.unknownNotePath = dashboard;
 
     const adapter = this.app.vault.adapter;
+    const directDashboard = normalizeVaultPath(root + "/未分类.md");
+    if (!(await adapter.exists(dashboard)) && directDashboard !== dashboard && (await adapter.exists(directDashboard))) {
+      try { await adapter.rename(directDashboard, dashboard); } catch (error) {}
+    }
     const dashboardExists = await adapter.exists(dashboard);
     const legacyCandidates = [
       String(this.legacyUnknownNotePath || "").trim(),
@@ -2209,9 +2217,10 @@ class VocabCapturePlugin extends Plugin {
           line: heading.start,
           filePath: file.path,
         };
-        const current = index.get(heading.title);
+        const key = normalizeUnknownSelection(heading.title);
+        const current = index.get(key);
         if (!current || (file.path === dashboard && current.filePath !== dashboard)) {
-          index.set(heading.title, item);
+          index.set(key, item);
         }
       }
     }
@@ -2225,7 +2234,7 @@ class VocabCapturePlugin extends Plugin {
   async getUnknownCard(entry) {
     const workspace = await this.getUnknownWorkspaceData();
     const index = this.getUnknownCardIndex(workspace);
-    return index.get(entry) || null;
+    return index.get(normalizeUnknownSelection(entry)) || null;
   }
 
   async addUnknownFolder(parentPath, name) {
@@ -2286,27 +2295,136 @@ class VocabCapturePlugin extends Plugin {
     }
   }
 
-  async deleteUnknownFolder(path) {
+  isUnknownUnclassifiedPath(path) {
     const root = this.getUnknownRootPath();
-    if (!root || path === root) return { changed: false, notice: "根目录不能删除" };
+    if (!root) return false;
+    const base = root + "/未分类";
+    return path === base || path.startsWith(base + "/");
+  }
+
+  async removeUnknownPath(path) {
     const node = this.app.vault.getAbstractFileByPath(path);
-    if (!node || !node.children) return { changed: false, notice: "不是文件夹" };
-    const archiveRoot = normalizeVaultPath(root + "/未分类");
-    await this.ensureUnknownFolder(archiveRoot);
-    const name = path.split("/").pop();
-    let target = archiveRoot + "/" + name;
-    let suffix = 2;
-    while (await this.app.vault.adapter.exists(target)) {
-      target = archiveRoot + "/" + name + "-" + suffix;
-      suffix += 1;
-    }
+    if (!node) return { changed: false, notice: "文件不存在" };
     try {
-      await this.app.vault.adapter.rename(path, target);
+      if (node.children) {
+        await this.app.vault.adapter.rmdir(path, true);
+      } else {
+        await this.app.vault.delete(node, true);
+      }
       this.invalidateUnknownCardIndex();
-      return { changed: true, path: target };
+      return { changed: true };
     } catch (error) {
       return { changed: false, notice: String(error.message || error) };
     }
+  }
+
+  async moveUnknownFolder(sourcePath, targetFolderPath) {
+    const root = this.getUnknownRootPath();
+    const source = normalizeVaultPath(sourcePath);
+    const target = normalizeVaultPath(targetFolderPath);
+    if (!root || !source || !target || source === root || target === source) {
+      return { changed: false, notice: "不能移动到当前位置" };
+    }
+    if (source.split("/").slice(0, -1).join("/") === target) {
+      return { changed: false, notice: "已经在目标文件夹" };
+    }
+    if (target === source || target.startsWith(source + "/")) {
+      return { changed: false, notice: "不能移动到自身子文件夹" };
+    }
+    const node = this.app.vault.getAbstractFileByPath(source);
+    if (!node || !node.children) return { changed: false, notice: "不是文件夹" };
+    const targetNode = this.app.vault.getAbstractFileByPath(target);
+    if (!targetNode || !targetNode.children) return { changed: false, notice: "目标不是文件夹" };
+    const name = source.split("/").pop();
+    let next = target + "/" + name;
+    let suffix = 2;
+    while (await this.app.vault.adapter.exists(next)) {
+      next = target + "/" + name + "-" + suffix;
+      suffix += 1;
+    }
+    try {
+      await this.app.vault.adapter.rename(source, next);
+      this.invalidateUnknownCardIndex();
+      return { changed: true, path: next };
+    } catch (error) {
+      return { changed: false, notice: String(error.message || error) };
+    }
+  }
+
+  async moveUnknownMarkdown(sourcePath, targetFolderPath) {
+    const source = normalizeVaultPath(sourcePath);
+    const target = normalizeVaultPath(targetFolderPath);
+    if (!source || !target) return { changed: false, notice: "路径无效" };
+    const node = this.app.vault.getAbstractFileByPath(source);
+    if (!node || node.children) return { changed: false, notice: "不是 Markdown" };
+    const targetNode = this.app.vault.getAbstractFileByPath(target);
+    if (!targetNode || !targetNode.children) return { changed: false, notice: "目标不是文件夹" };
+    if (source.split("/").slice(0, -1).join("/") === target) {
+      return { changed: false, notice: "已经在目标文件夹" };
+    }
+    const name = source.split("/").pop();
+    let next = target + "/" + name;
+    let suffix = 2;
+    while (await this.app.vault.adapter.exists(next)) {
+      const stem = name.replace(/\.md$/i, "");
+      next = target + "/" + stem + "-" + suffix + ".md";
+      suffix += 1;
+    }
+    try {
+      await this.app.vault.adapter.rename(source, next);
+      this.invalidateUnknownCardIndex();
+      return { changed: true, path: next };
+    } catch (error) {
+      return { changed: false, notice: String(error.message || error) };
+    }
+  }
+
+  async deleteUnknownFolder(path) {
+    const root = this.getUnknownRootPath();
+    const unclassified = root ? normalizeVaultPath(root + "/未分类") : null;
+    if (!root || !unclassified || path === root) {
+      return { changed: false, notice: "根目录不能删除" };
+    }
+    if (path === unclassified) {
+      return { changed: false, notice: "未分类文件夹不能整体删除" };
+    }
+    const node = this.app.vault.getAbstractFileByPath(path);
+    if (!node || !node.children) return { changed: false, notice: "不是文件夹" };
+
+    if (this.isUnknownUnclassifiedPath(path)) {
+      return this.removeUnknownPath(path);
+    }
+
+    await this.ensureUnknownFolder(unclassified);
+    const children = [...(node.children || [])];
+    for (const child of children) {
+      const name = child.name;
+      let next = unclassified + "/" + name;
+      let suffix = 2;
+      while (await this.app.vault.adapter.exists(next)) {
+        next = unclassified + "/" + name + "-" + suffix;
+        suffix += 1;
+      }
+      try {
+        await this.app.vault.adapter.rename(child.path, next);
+      } catch (error) {
+        return { changed: false, notice: String(error.message || error) };
+      }
+    }
+    await this.removeUnknownPath(path);
+    this.invalidateUnknownCardIndex();
+    return { changed: true, path: unclassified };
+  }
+
+  async deleteUnknownCard(filePath, title) {
+    const node = this.app.vault.getAbstractFileByPath(filePath);
+    if (!node || node.children) return { changed: false, notice: "Markdown 不存在" };
+    const text = await this.readTextFile(filePath);
+    const next = removeHeadingSection(text, title);
+    if (next == null) return { changed: false, notice: "卡片不存在" };
+    await this.writeTextFile(filePath, next);
+    this.invalidateUnknownCardIndex();
+    return { changed: true };
   }
 
   async moveUnknownCardToParent(sourceFile, title, targetFile, parentTitle) {
@@ -2874,6 +2992,7 @@ class VocabCapturePlugin extends Plugin {
     if (typeof state.managerOpen !== "boolean") state.managerOpen = false;
     if (typeof state.search !== "string") state.search = "";
     if (typeof state.folder !== "string") state.folder = workspace.root;
+    if (typeof state.drag !== "object") state.drag = null;
     this.unknownUiState = state;
 
     const signature = JSON.stringify({
@@ -3642,6 +3761,56 @@ class VocabCapturePlugin extends Plugin {
           this.showUnknownFolderContext(panel, event, workspace, state, node, refresh);
         }
       });
+
+      row.draggable = true;
+      row.addEventListener("dragstart", (event) => {
+        state.drag = { type: node.type, path: node.path };
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", JSON.stringify(state.drag));
+        }
+        row.classList.add("is-dragging");
+      });
+      row.addEventListener("dragend", () => {
+        state.drag = null;
+        row.classList.remove("is-dragging");
+        tree.querySelectorAll(".is-drop-target").forEach((item) => item.classList.remove("is-drop-target"));
+      });
+      row.addEventListener("dragover", (event) => {
+        if (!state.drag) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        row.classList.add("is-drop-target");
+      });
+      row.addEventListener("dragleave", () => row.classList.remove("is-drop-target"));
+      row.addEventListener("drop", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        row.classList.remove("is-drop-target");
+        const drag = state.drag;
+        state.drag = null;
+        if (!drag) return;
+        let result;
+        if (drag.type === "folder" && node.type === "folder") {
+          result = await this.moveUnknownFolder(drag.path, node.path);
+        } else if (drag.type === "file" && node.type === "folder") {
+          result = await this.moveUnknownMarkdown(drag.path, node.path);
+        } else if (drag.type === "card" && node.type === "file") {
+          result = await this.moveUnknownCardToParent(drag.filePath, drag.title, node.path, null);
+        } else if (drag.type === "card" && node.type === "folder") {
+          const fileNode = (node.children || []).find((child) => child.type === "file");
+          if (!fileNode) {
+            new Notice("该文件夹没有 Markdown，无法放入卡片");
+            return;
+          }
+          result = await this.moveUnknownCardToParent(drag.filePath, drag.title, fileNode.path, null);
+        } else {
+          new Notice("不能放到这个位置");
+          return;
+        }
+        if (result && !result.changed) new Notice(result.notice || "移动失败");
+        await refresh();
+      });
       tree.appendChild(row);
       if (node.type === "folder" && (state.expanded.has(node.path) || query)) {
         for (const child of node.children || []) addNode(child, depth + 1);
@@ -3748,6 +3917,45 @@ class VocabCapturePlugin extends Plugin {
         event.stopPropagation();
         state.selectedHeading = heading.title;
         this.showUnknownCardContext(panel, event, workspace, state, selectedFile, heading, refresh);
+      });
+
+      row.draggable = true;
+      row.addEventListener("dragstart", (event) => {
+        if (!selectedFile) return;
+        state.drag = { type: "card", filePath: selectedFile.path, title: heading.title };
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", JSON.stringify(state.drag));
+        }
+        row.classList.add("is-dragging");
+      });
+      row.addEventListener("dragend", () => {
+        state.drag = null;
+        row.classList.remove("is-dragging");
+        headingList.querySelectorAll(".is-drop-target").forEach((item) => item.classList.remove("is-drop-target"));
+      });
+      row.addEventListener("dragover", (event) => {
+        if (!state.drag || state.drag.type !== "card") return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        row.classList.add("is-drop-target");
+      });
+      row.addEventListener("dragleave", () => row.classList.remove("is-drop-target"));
+      row.addEventListener("drop", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        row.classList.remove("is-drop-target");
+        const drag = state.drag;
+        state.drag = null;
+        if (!drag || drag.type !== "card" || !selectedFile) return;
+        const result = await this.moveUnknownCardToParent(
+          drag.filePath,
+          drag.title,
+          selectedFile.path,
+          heading.title,
+        );
+        if (!result.changed) new Notice(result.notice || "移动失败");
+        await refresh();
       });
       headingList.appendChild(row);
     }
@@ -3874,8 +4082,8 @@ class VocabCapturePlugin extends Plugin {
                 await refresh();
               });
             }],
-            ["删除文件夹（移至未分类）", () => {
-              if (!window.confirm(`删除文件夹“${node.name}”？整个分支会移动到未分类，内容不会删除。`)) return;
+            ["删除文件夹", () => {
+              if (!window.confirm(`删除文件夹“${node.name}”？未分类中的内容会直接删除；其他位置的内容会移动到未分类。`)) return;
               void this.deleteUnknownFolder(node.path).then(async (result) => {
                 if (!result.changed) new Notice(result.notice || "删除失败");
                 await refresh();
@@ -3900,6 +4108,15 @@ class VocabCapturePlugin extends Plugin {
           await refresh();
         });
       }],
+      ...(this.isUnknownUnclassifiedPath(node.path)
+        ? [["删除 Markdown（直接删除）", () => {
+            if (!window.confirm(`删除 Markdown“${node.name}”？内容会直接删除。`)) return;
+            void this.removeUnknownPath(node.path).then(async (result) => {
+              if (!result.changed) new Notice(result.notice || "删除失败");
+              await refresh();
+            });
+          }]]
+        : []),
     ]);
   }
 
@@ -3908,6 +4125,15 @@ class VocabCapturePlugin extends Plugin {
       ["移动卡片", () => {
         this.openUnknownMoveUi(panel, workspace, state, file, heading, refresh);
       }],
+      ...(this.isUnknownUnclassifiedPath(file.path)
+        ? [["删除卡片（直接删除）", () => {
+            if (!window.confirm(`删除卡片“${heading.title}”？内容会直接删除。`)) return;
+            void this.deleteUnknownCard(file.path, heading.title).then(async (result) => {
+              if (!result.changed) new Notice(result.notice || "删除失败");
+              await refresh();
+            });
+          }]]
+        : []),
     ]);
   }
 

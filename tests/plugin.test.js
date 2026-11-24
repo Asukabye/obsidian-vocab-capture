@@ -56,6 +56,13 @@ function makeFakeVault(initialFiles, initialDirs) {
       if (files.has(from)) { files.set(to, files.get(from)); files.delete(from); }
       else { dirs.delete(from); dirs.add(to); }
     },
+    async rmdir(target, recursive) {
+      if (recursive) {
+        for (const key of [...files.keys()]) if (key.startsWith(target + "/")) files.delete(key);
+        for (const key of [...dirs]) if (key === target || key.startsWith(target + "/")) dirs.delete(key);
+      }
+      dirs.delete(target);
+    },
   };
   function build(path) {
     if (files.has(path)) {
@@ -322,7 +329,7 @@ test("插件: ensureUnknownHeadings 创建并复用笔记标题", async () => {
   plugin.settings = {
     unknownFilePath: "unknown.txt",
     unknownRootFolder: "不理解的词",
-    unknownNotePath: "不理解的词/未分类.md",
+    unknownNotePath: "不理解的词/未分类/未分类.md",
   };
   plugin.app = { vault: fake.vault, workspace: { getLeavesOfType: () => [] } };
   plugin.saveSettings = async () => {};
@@ -334,7 +341,7 @@ test("插件: ensureUnknownHeadings 创建并复用笔记标题", async () => {
   );
   assert.equal(changed, true);
   assert.equal(
-    fake.files.get("不理解的词/未分类.md"),
+    fake.files.get("不理解的词/未分类/未分类.md"),
     "# hello\n\n# world\n",
   );
 
@@ -413,13 +420,13 @@ test("插件: 取消不理解词不删除笔记中的标题内容", async () => 
 
 test("插件: openUnknownEntry 打开笔记并定位标题行", async () => {
   const fake = makeFakeVault(
-    new Map([["不理解的词/未分类.md", "# hello\n"]]),
+    new Map([["不理解的词/未分类/未分类.md", "# hello\n"]]),
     new Set(["不理解的词"]),
   );
   const plugin = Object.create(PluginClass.prototype);
   plugin.settings = {
     unknownRootFolder: "不理解的词",
-    unknownNotePath: "不理解的词/未分类.md",
+    unknownNotePath: "不理解的词/未分类/未分类.md",
   };
   plugin.unknownStore = { entries: new Set(["hello"]) };
   plugin.app = {
@@ -434,7 +441,7 @@ test("插件: openUnknownEntry 打开笔记并定位标题行", async () => {
   };
 
   await plugin.openUnknownEntry("hello");
-  assert.equal(plugin.openedPath, "不理解的词/未分类.md");
+  assert.equal(plugin.openedPath, "不理解的词/未分类/未分类.md");
   assert.deepEqual(plugin.state, { line: 0 });
 });
 
@@ -450,7 +457,7 @@ test("插件: 不理解词笔记前方渲染管理 UI", async () => {
   global.document = dom.window.document;
   global.Element = dom.window.Element;
 
-  const path = "不理解的词/未分类.md";
+  const path = "不理解的词/未分类/未分类.md";
   const fake = makeFakeVault(
     new Map([[path, "# Vite\n\n# foo\n"]]),
     new Set(["不理解的词"]),
@@ -499,43 +506,86 @@ test("插件: 旧设置加载后补齐不理解词默认值", async () => {
 
   assert.equal(plugin.settings.unknownFilePath, "不理解的词.txt");
   assert.equal(plugin.settings.unknownRootFolder, "不理解的词");
-  assert.equal(plugin.settings.unknownNotePath, "不理解的词/未分类.md");
+  assert.equal(plugin.settings.unknownNotePath, "不理解的词/未分类/未分类.md");
   assert.equal(plugin.settings.unknownHotkey.key, "Q");
   assert.deepEqual(plugin.settings.unknownHotkey.modifiers, ["Alt"]);
 });
 
 
-test("插件: 未分类.md 直接位于不理解词根目录", async () => {
+test("插件: 未分类.md 位于未分类文件夹", async () => {
   const fake = makeFakeVault();
   const plugin = Object.create(PluginClass.prototype);
   plugin.settings = {
     unknownRootFolder: "不理解的词",
-    unknownNotePath: "不理解的词/未分类.md",
+    unknownNotePath: "不理解的词/未分类/未分类.md",
   };
   plugin.app = { vault: fake.vault };
   plugin.saveSettings = async () => {};
   await plugin.ensureUnknownWorkspace();
-  assert.ok(fake.files.has("不理解的词/未分类.md"));
-  assert.equal(fake.dirs.has("不理解的词/未分类"), false);
+  assert.ok(fake.files.has("不理解的词/未分类/未分类.md"));
+  assert.equal(fake.dirs.has("不理解的词/未分类"), true);
 });
 
 test("插件: 移动已有卡片到父级并自动计算级别", async () => {
   const fake = makeFakeVault(
-    new Map([["不理解的词/未分类.md", "# parent\n\n## child\n\n# target\n"]]),
+    new Map([["不理解的词/未分类/未分类.md", "# parent\n\n## child\n\n# target\n"]]),
     new Set(["不理解的词"]),
   );
   const plugin = Object.create(PluginClass.prototype);
   plugin.settings = {
     unknownRootFolder: "不理解的词",
-    unknownNotePath: "不理解的词/未分类.md",
+    unknownNotePath: "不理解的词/未分类/未分类.md",
   };
   plugin.app = { vault: fake.vault };
   const result = await plugin.moveUnknownCardToParent(
-    "不理解的词/未分类.md",
+    "不理解的词/未分类/未分类.md",
     "child",
-    "不理解的词/未分类.md",
+    "不理解的词/未分类/未分类.md",
     "target",
   );
   assert.equal(result.changed, true);
-  assert.equal(fake.files.get("不理解的词/未分类.md"), "# parent\n\n# target\n\n## child\n");
+  assert.equal(fake.files.get("不理解的词/未分类/未分类.md"), "# parent\n\n# target\n\n## child\n");
+});
+
+
+test("插件: 删除普通文件夹时内容移至未分类", async () => {
+  const fake = makeFakeVault(
+    new Map([
+      ["不理解的词/未分类/未分类.md", "# base\n"],
+      ["不理解的词/python/python.md", "# py\n"],
+    ]),
+    new Set(["不理解的词", "不理解的词/未分类", "不理解的词/python"]),
+  );
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    unknownRootFolder: "不理解的词",
+    unknownNotePath: "不理解的词/未分类/未分类.md",
+  };
+  plugin.app = { vault: fake.vault };
+  const result = await plugin.deleteUnknownFolder("不理解的词/python");
+  assert.equal(result.changed, true);
+  assert.ok(fake.files.has("不理解的词/未分类/python.md"));
+  assert.equal(fake.dirs.has("不理解的词/python"), false);
+});
+
+test("插件: 未分类中的卡片可直接删除", async () => {
+  const fake = makeFakeVault(
+    new Map([["不理解的词/未分类/未分类.md", "# parent\n\n## child\n\n# other\n"]]),
+    new Set(["不理解的词", "不理解的词/未分类"]),
+  );
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    unknownRootFolder: "不理解的词",
+    unknownNotePath: "不理解的词/未分类/未分类.md",
+  };
+  plugin.app = { vault: fake.vault };
+  const result = await plugin.deleteUnknownCard(
+    "不理解的词/未分类/未分类.md",
+    "child",
+  );
+  assert.equal(result.changed, true);
+  assert.equal(
+    fake.files.get("不理解的词/未分类/未分类.md"),
+    "# parent\n\n# other\n",
+  );
 });

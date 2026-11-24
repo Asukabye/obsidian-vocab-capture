@@ -828,3 +828,13 @@ test("层级: 文件夹名和 Markdown 名安全化", () => {
   assert.equal(normalizeSafeMarkdownName("os"), "os.md");
   assert.equal(normalizeSafeMarkdownName("a/b.md"), "a b.md");
 });
+
+
+test("不理解词: 行内代码反引号在阅读与编辑中一致匹配", () => {
+  assert.equal(normalizeUnknownSelection("\`.pyw\`"), ".pyw");
+  assert.equal(normalizeUnknownSelection("\`图片清洗工具.pyw\`"), "图片清洗工具.pyw");
+  const regex = buildUnknownRegex(["\`.pyw\`"]);
+  assert.ok(regex);
+  assert.equal(regex.test("与同目录 \`图片清洗工具.pyw\` 的关系"), true);
+  assert.equal(appendUnknownRecord("\`.pyw\`\n", "\`.pyw\`").added, false);
+});

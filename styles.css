@@ -704,3 +704,8 @@
     width: 44%;
   }
 }
+
+.vocab-capture-folder-ui__row.is-dragging,
+.vocab-capture-folder-ui__heading.is-dragging { opacity: .45; }
+.vocab-capture-folder-ui__row.is-drop-target,
+.vocab-capture-folder-ui__heading.is-drop-target { outline: 1px dashed var(--interactive-accent); outline-offset: -2px; }
