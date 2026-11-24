@@ -1692,7 +1692,6 @@ class VocabCapturePlugin extends Plugin {
     try {
       await this.unknownStore.load();
       await this.ensureUnknownWorkspace();
-      await this.ensureUnknownHeadings(this.unknownStore.entries, false);
     } catch (error) {
       console.error("[vocab-capture] load unknown list failed", error);
       new Notice(`读取不理解词文件失败：${String(error.message || error)}`);
@@ -1918,7 +1917,12 @@ class VocabCapturePlugin extends Plugin {
       this.scheduleRefresh(40);
     });
 
-    this.app.workspace.onLayoutReady(() => {
+    this.app.workspace.onLayoutReady(async () => {
+      try {
+        await this.ensureUnknownHeadings(this.unknownStore.entries, false);
+      } catch (error) {
+        console.error("[vocab-capture] ensure unknown headings failed", error);
+      }
       this.ensureObservers();
       this.scheduleRefresh(0);
     });
@@ -2108,6 +2112,29 @@ class VocabCapturePlugin extends Plugin {
       .getMarkdownFiles()
       .filter((file) => file.path === root || file.path.startsWith(root + "/"))
       .sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  async getUnknownAdapterMarkdownPaths() {
+    const root = this.getUnknownRootPath();
+    const adapter = this.app.vault && this.app.vault.adapter;
+    if (!root || !adapter || typeof adapter.list !== "function") return [];
+    const paths = [];
+    const walk = async (dir) => {
+      let listed;
+      try {
+        listed = await adapter.list(dir);
+      } catch (error) {
+        return;
+      }
+      for (const file of listed.files || []) {
+        if (/\.md$/i.test(file)) paths.push(file);
+      }
+      for (const folder of listed.folders || []) {
+        await walk(folder);
+      }
+    };
+    await walk(root);
+    return paths;
   }
 
   async getUnknownWorkspaceData() {
@@ -2916,6 +2943,37 @@ class VocabCapturePlugin extends Plugin {
     const dashboard = workspace.dashboard;
     let text = await this.readTextFile(dashboard);
     let changed = false;
+
+    const missing = list.filter((entry) => !index.has(normalizeUnknownKey(entry)));
+    if (missing.length) {
+      const knownPaths = new Set(workspace.files.map((file) => file.path));
+      try {
+        const adapterPaths = await this.getUnknownAdapterMarkdownPaths();
+        for (const path of adapterPaths) {
+          if (knownPaths.has(path)) continue;
+          let fileText = "";
+          try {
+            fileText = await this.readTextFile(path);
+          } catch (error) {
+            continue;
+          }
+          const parsed = parseMarkdownHeadings(fileText);
+          for (const heading of parsed.headings) {
+            const key = normalizeUnknownKey(heading.title);
+            if (!index.has(key)) {
+              index.set(key, {
+                title: heading.title,
+                level: heading.level,
+                line: heading.start,
+                filePath: path,
+              });
+            }
+          }
+        }
+      } catch (error) {
+        // Adapter scanning is a startup fallback; normal vault indexing is preferred.
+      }
+    }
 
     for (const entry of list) {
       const entryKey = normalizeUnknownKey(entry);

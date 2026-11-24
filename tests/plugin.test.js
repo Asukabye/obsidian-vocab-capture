@@ -52,6 +52,22 @@ function makeFakeVault(initialFiles, initialDirs) {
     async exists(path) { return files.has(path) || dirs.has(path); },
     async read(path) { return files.get(path) || ""; },
     async write(path, text) { files.set(path, text); },
+    async list(path) {
+      const prefix = path ? path + "/" : "";
+      const listedFiles = [];
+      const listedFolders = [];
+      for (const file of files.keys()) {
+        if (!file.startsWith(prefix)) continue;
+        const rest = file.slice(prefix.length);
+        if (rest && !rest.includes("/")) listedFiles.push(file);
+      }
+      for (const dir of dirs) {
+        if (!dir.startsWith(prefix)) continue;
+        const rest = dir.slice(prefix.length);
+        if (rest && !rest.includes("/")) listedFolders.push(dir);
+      }
+      return { files: listedFiles, folders: listedFolders };
+    },
     async rename(from, to) {
       if (files.has(from)) { files.set(to, files.get(from)); files.delete(from); }
       else { dirs.delete(from); dirs.add(to); }
@@ -635,4 +651,30 @@ test("插件: 跨文件移动卡片会移除源卡片", async () => {
   assert.equal(result.changed, true);
   assert.equal(fake.files.get("不理解的词/未分类/未分类.md"), "\n# other\n");
   assert.ok(fake.files.get("不理解的词/python/库.md").includes("## word"));
+});
+
+
+test("启动修复不会把已移动卡片补回未分类", async () => {
+  const fake = makeFakeVault(
+    new Map([
+      ["不理解的词/未分类/未分类.md", "# other\n"],
+      ["不理解的词/python/库.md", "# 标准库\n\n## word\n"],
+    ]),
+    new Set(["不理解的词", "不理解的词/未分类", "不理解的词/python"]),
+  );
+  const allMarkdown = fake.vault.getMarkdownFiles.bind(fake.vault);
+  fake.vault.getMarkdownFiles = () =>
+    allMarkdown().filter((file) => file.path.includes("/未分类/"));
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    unknownRootFolder: "不理解的词",
+    unknownNotePath: "不理解的词/未分类/未分类.md",
+  };
+  plugin.app = { vault: fake.vault };
+  plugin.unknownStore = { entries: new Set(["word"]) };
+  await plugin.ensureUnknownHeadings(plugin.unknownStore.entries, false);
+  assert.equal(
+    fake.files.get("不理解的词/未分类/未分类.md"),
+    "# other\n",
+  );
 });

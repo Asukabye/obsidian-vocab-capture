@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.10
+
+- 启动时的缺失卡片修复延迟到 workspace.onLayoutReady，避免 Vault 索引未完成时误判卡片缺失。
+- 修复前增加 adapter 递归扫描兜底，移动后的卡片即使暂未进入 getMarkdownFiles 也能被识别。
+- 避免重启后把已移动卡片重新补回 `未分类.md`。
+
 ## 0.9.9
 
 - Live Preview 表格增加 DOM Range 高亮，修复编辑视图表格中的不理解词不渲染。
