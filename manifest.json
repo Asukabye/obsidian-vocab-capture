@@ -1,7 +1,7 @@
 {
   "id": "vocab-capture",
   "name": "生词捕获",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "minAppVersion": "1.5.0",
   "description": "不理解词多分支展开、拖拽移动、快速目标与 H1–H6 目录树。",
   "author": "DeepSeek Harness",

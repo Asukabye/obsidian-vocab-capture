@@ -3595,6 +3595,16 @@ class VocabCapturePlugin extends Plugin {
 
   renderUnknownFolderUi(panel, workspace, state) {
     if (!panel) return;
+
+    const previousTree = panel.querySelector(".vocab-capture-folder-ui__tree");
+    const previousTreeScroll = previousTree ? previousTree.scrollTop : 0;
+    const previousHeadings = panel.querySelector(".vocab-capture-folder-ui__headings");
+    const previousHeadingsScroll = previousHeadings ? previousHeadings.scrollTop : 0;
+    const previousSelectedFile = panel.dataset.selectedFile || "";
+    const previousHost = panel.parentElement;
+    const previousHostScroll = previousHost ? previousHost.scrollTop : 0;
+    const previousPageScroll = typeof window !== "undefined" ? window.scrollY || 0 : 0;
+
     panel.replaceChildren();
 
     const el = (tag, className, text) => {
@@ -4173,6 +4183,30 @@ class VocabCapturePlugin extends Plugin {
     foot.appendChild(el("span", "vocab-capture-folder-ui__foot-right", `${totalCards} 条`));
     manager.appendChild(foot);
     panel.appendChild(manager);
+
+    if (tree) tree.scrollTop = previousTreeScroll;
+    const nextHeadings = panel.querySelector(".vocab-capture-folder-ui__headings");
+    if (nextHeadings && previousSelectedFile === (state.selectedFile || "")) {
+      nextHeadings.scrollTop = previousHeadingsScroll;
+    }
+    panel.dataset.selectedFile = state.selectedFile || "";
+    const restorePageScroll = () => {
+      try {
+        if (previousHost && previousHost.scrollTop !== previousHostScroll) {
+          previousHost.scrollTop = previousHostScroll;
+        }
+        if (typeof window !== "undefined" && window.scrollY !== previousPageScroll) {
+          window.scrollTo({ top: previousPageScroll, left: window.scrollX || 0 });
+        }
+      } catch (error) {
+        // Ignore scroll restoration failures in non-browser environments.
+      }
+    };
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(restorePageScroll);
+    } else {
+      restorePageScroll();
+    }
 
     search.addEventListener("input", () => {
       state.search = search.value;
