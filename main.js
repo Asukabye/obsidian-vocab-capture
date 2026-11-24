@@ -2986,13 +2986,18 @@ class VocabCapturePlugin extends Plugin {
     if (!state.expanded || !(state.expanded instanceof Set)) {
       state.expanded = new Set([workspace.root]);
     }
-    if (!state.selectedFile || !workspace.fileMap.has(state.selectedFile)) {
-      state.selectedFile = workspace.dashboard;
+    if (state.selectedFile && !workspace.fileMap.has(state.selectedFile)) {
+      state.selectedFile = null;
+      state.selectedHeading = null;
     }
     if (typeof state.managerOpen !== "boolean") state.managerOpen = false;
     if (typeof state.search !== "string") state.search = "";
     if (typeof state.folder !== "string") state.folder = workspace.root;
     if (typeof state.drag !== "object") state.drag = null;
+    if (!Array.isArray(state.recentTargets)) state.recentTargets = [];
+    if (!state.recentTargets.length && workspace.dashboard) {
+      state.recentTargets = [workspace.dashboard];
+    }
     this.unknownUiState = state;
 
     const signature = JSON.stringify({
@@ -3005,6 +3010,8 @@ class VocabCapturePlugin extends Plugin {
       selectedHeading: state.selectedHeading || null,
       expanded: Array.from(state.expanded),
       folder: state.folder,
+      recentTargets: state.recentTargets || [],
+      folderSelected: Boolean(state.folderSelected),
     });
 
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
@@ -3611,10 +3618,13 @@ class VocabCapturePlugin extends Plugin {
       await this.rerenderUnknownNoteViews();
       await this.refreshUnknownNoteUi();
     };
-    const selectedFile = workspace.fileMap.get(state.selectedFile) || workspace.files[0] || null;
+    const selectedFile = state.selectedFile
+      ? workspace.fileMap.get(state.selectedFile)
+      : null;
     const selectedHeadings = selectedFile ? selectedFile.headings : [];
     const totalCards = workspace.files.reduce((sum, file) => sum + file.headings.length, 0);
     const folderCount = Math.max(0, this.countUnknownFolders(workspace.tree) - 1);
+    const query = String(state.search || "").trim().toLocaleLowerCase();
 
     const compact = el("div", "vocab-capture-folder-ui__compact");
     const compactLeft = el("div", "vocab-capture-folder-ui__compact-left");
@@ -3644,9 +3654,8 @@ class VocabCapturePlugin extends Plugin {
         this.promptUnknownUi(panel, "新建 Markdown", "文件名", "新文件.md", async (value) => {
           const folder = this.getUnknownSelectedFolder(workspace, state);
           const result = await this.addUnknownMarkdown(folder, value);
-          if (!result.changed) {
-            new Notice(result.notice || "新建 Markdown 失败");
-          } else {
+          if (!result.changed) new Notice(result.notice || "新建 Markdown 失败");
+          else {
             state.selectedFile = result.path;
             state.folder = folder;
           }
@@ -3657,6 +3666,13 @@ class VocabCapturePlugin extends Plugin {
     compactActions.appendChild(
       button(state.managerOpen ? "收起" : "管理", "vocab-capture-folder-ui__primary", () => {
         state.managerOpen = !state.managerOpen;
+        if (state.managerOpen) {
+          state.selectedFile = null;
+          state.selectedHeading = null;
+          state.folder = workspace.root;
+          state.folderSelected = false;
+          state.expanded = new Set([workspace.root]);
+        }
         render();
       }),
     );
@@ -3668,16 +3684,10 @@ class VocabCapturePlugin extends Plugin {
     const manager = el("div", "vocab-capture-folder-ui__manager");
     const head = el("div", "vocab-capture-folder-ui__head");
     head.appendChild(el("span", "vocab-capture-folder-ui__head-title", "文件夹与卡片"));
-    head.appendChild(
-      el(
-        "span",
-        "vocab-capture-folder-ui__head-sub",
-        "文件夹只负责分类；卡片只能写入 Markdown",
-      ),
-    );
+    head.appendChild(el("span", "vocab-capture-folder-ui__head-sub", "文件夹只负责分类；卡片只能写入 Markdown"));
     const search = el("input", "vocab-capture-folder-ui__search");
     search.type = "search";
-    search.placeholder = "搜索文件夹、Markdown、卡片";
+    search.placeholder = "搜索文件夹、Markdown、标题";
     search.value = state.search;
     head.appendChild(search);
     head.appendChild(
@@ -3693,20 +3703,48 @@ class VocabCapturePlugin extends Plugin {
     const leftHead = el("div", "vocab-capture-folder-ui__section-head");
     leftHead.appendChild(el("span", "vocab-capture-folder-ui__section-title", "文件夹 / Markdown"));
     leftHead.appendChild(
-      button("新建文件夹", "vocab-capture-folder-ui__section-add", () => {
-        this.promptUnknownUi(panel, "新建文件夹", "文件夹名", "", async (value) => {
-          const parent = this.getUnknownSelectedFolder(workspace, state);
-          const result = await this.addUnknownFolder(parent, value);
-          if (!result.changed) new Notice(result.notice || "新建文件夹失败");
-          state.expanded.add(parent);
-          await refresh();
-        });
+      button("折叠全部", "vocab-capture-folder-ui__fold-all", () => {
+        state.expanded = new Set([workspace.root]);
+        render();
       }),
     );
     left.appendChild(leftHead);
 
     const tree = el("div", "vocab-capture-folder-ui__tree");
-    const query = String(state.search || "").trim().toLocaleLowerCase();
+    const keyForFolder = (path) => `folder:${path}`;
+    const keyForFile = (path) => `file:${path}`;
+    const keyForHeading = (filePath, title) => `heading:${filePath}:${title}`;
+    const isSelectedHeading = (filePath, title) =>
+      state.selectedFile === filePath && state.selectedHeading === title;
+    const isSelectedFile = (path) => state.selectedFile === path && !state.selectedHeading;
+    const isSelectedFolder = (path) => !state.selectedFile && state.folderSelected === true && state.folder === path;
+    const rememberRecent = (path) => {
+      if (!path) return;
+      state.recentTargets = [
+        path,
+        ...(state.recentTargets || []).filter((item) => item !== path),
+      ].slice(0, 5);
+    };
+    const expandPath = (path) => {
+      const parts = String(path).split("/");
+      let current = "";
+      for (const part of parts) {
+        current = current ? current + "/" + part : part;
+        state.expanded.add(current);
+      }
+    };
+    const expandHeadingPath = (file, heading) => {
+      expandPath(file.path);
+      const headings = file.headings || [];
+      const index = headings.indexOf(heading);
+      const stack = [];
+      for (let i = 0; i < index; i += 1) {
+        while (stack.length && stack[stack.length - 1].level >= headings[i].level) stack.pop();
+        stack.push(headings[i]);
+      }
+      for (const item of stack) state.expanded.add(keyForHeading(file.path, item.title));
+      state.expanded.add(keyForHeading(file.path, heading.title));
+    };
     const matches = (node) => {
       if (!query) return true;
       if (node.name && node.name.toLocaleLowerCase().includes(query)) return true;
@@ -3716,40 +3754,140 @@ class VocabCapturePlugin extends Plugin {
       }
       return (node.children || []).some(matches);
     };
+    const matchesHeading = (heading) => !query || heading.title.toLocaleLowerCase().includes(query);
+    const findFile = (path) => workspace.fileMap.get(path) || null;
+
+    const renderHeading = (heading, filePath, depth) => {
+      if (!matchesHeading(heading) && !isSelectedHeading(filePath, heading.title)) return;
+      const key = keyForHeading(filePath, heading.title);
+      const row = el(
+        "div",
+        "vocab-capture-folder-ui__row vocab-capture-folder-ui__heading-row" +
+          (isSelectedHeading(filePath, heading.title) ? " is-selected" : ""),
+      );
+      row.style.paddingLeft = `${5 + depth * 16}px`;
+      row.dataset.type = "heading";
+      row.dataset.path = filePath;
+      row.dataset.title = heading.title;
+      row.appendChild(el("span", "vocab-capture-folder-ui__name", heading.title));
+      row.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const file = findFile(filePath);
+        if (!file) return;
+        state.folder = filePath.split("/").slice(0, -1).join("/");
+        state.folderSelected = false;
+        state.selectedFile = filePath;
+        state.selectedHeading = heading.title;
+        expandHeadingPath(file, heading);
+        render();
+      });
+      row.addEventListener("dblclick", (event) => {
+        event.stopPropagation();
+        if (state.expanded.has(key)) state.expanded.delete(key);
+        else state.expanded.add(key);
+        render();
+      });
+      row.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const file = findFile(filePath);
+        if (file) {
+          state.selectedFile = filePath;
+          state.selectedHeading = heading.title;
+          this.showUnknownCardContext(panel, event, workspace, state, file, heading, refresh);
+        }
+      });
+
+      row.draggable = true;
+      row.addEventListener("dragstart", (event) => {
+        state.drag = { type: "card", filePath, title: heading.title };
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", JSON.stringify(state.drag));
+        }
+        row.classList.add("is-dragging");
+      });
+      row.addEventListener("dragend", () => {
+        state.drag = null;
+        row.classList.remove("is-dragging");
+        tree.querySelectorAll(".is-drop-target").forEach((item) => item.classList.remove("is-drop-target"));
+      });
+      row.addEventListener("dragover", (event) => {
+        if (!state.drag) return;
+        event.preventDefault();
+        row.classList.add("is-drop-target");
+      });
+      row.addEventListener("dragleave", () => row.classList.remove("is-drop-target"));
+      row.addEventListener("drop", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        row.classList.remove("is-drop-target");
+        const drag = state.drag;
+        state.drag = null;
+        if (!drag) return;
+        if (drag.type === "card") {
+          const result = await this.moveUnknownCardToParent(
+            drag.filePath,
+            drag.title,
+            filePath,
+            heading.title,
+          );
+          if (!result.changed) new Notice(result.notice || "移动失败");
+          else rememberRecent(filePath);
+        } else {
+          new Notice("只能把卡片放到标题上");
+        }
+        await refresh();
+      });
+
+      tree.appendChild(row);
+      if (state.expanded.has(key) || query) {
+        const file = findFile(filePath);
+        const headings = file ? file.headings : [];
+        const index = headings.indexOf(heading);
+        for (let i = index + 1; i < headings.length; i += 1) {
+          if (headings[i].level <= heading.level) break;
+          if (headings[i].level === heading.level + 1) {
+            renderHeading(headings[i], filePath, depth + 1);
+          }
+        }
+      }
+    };
+
     const addNode = (node, depth) => {
       if (!matches(node)) return;
       const row = el(
         "div",
         "vocab-capture-folder-ui__row" +
-          (node.type === "file" && node.path === state.selectedFile ? " is-selected" : "") +
-          (node.type === "folder" && node.path === state.folder ? " is-folder-selected" : ""),
+          (node.type === "file" && isSelectedFile(node.path) ? " is-selected" : "") +
+          (node.type === "folder" && isSelectedFolder(node.path) ? " is-folder-selected" : ""),
       );
       row.style.paddingLeft = `${5 + depth * 16}px`;
       row.dataset.path = node.path;
       row.dataset.type = node.type;
       row.appendChild(el("span", "vocab-capture-folder-ui__name", node.name));
       row.appendChild(el("span", "vocab-capture-folder-ui__count", String(node.count || 0)));
-      if (node.type === "folder" && node.path !== workspace.root) {
-        const expanded = state.expanded.has(node.path);
-        row.appendChild(
-          button(expanded ? "收起" : "展开", "vocab-capture-folder-ui__toggle", () => {
-            if (expanded) state.expanded.delete(node.path);
-            else state.expanded.add(node.path);
-            render();
-          }),
-        );
-      }
-      row.addEventListener("click", () => {
-        state.folder = node.type === "folder" ? node.path : node.path.split("/").slice(0, -1).join("/");
-        if (node.type === "file") {
-          state.selectedFile = node.path;
+      row.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (node.type === "folder") {
+          state.folder = node.path;
+          state.folderSelected = true;
+          state.selectedFile = null;
           state.selectedHeading = null;
-        } else if (node.path === workspace.root) {
           state.expanded.add(node.path);
         } else {
-          if (state.expanded.has(node.path)) state.expanded.delete(node.path);
-          else state.expanded.add(node.path);
+          state.folder = node.path.split("/").slice(0, -1).join("/");
+          state.folderSelected = false;
+          state.selectedFile = node.path;
+          state.selectedHeading = null;
+          state.expanded.add(node.path);
         }
+        render();
+      });
+      row.addEventListener("dblclick", (event) => {
+        event.stopPropagation();
+        if (state.expanded.has(node.path)) state.expanded.delete(node.path);
+        else state.expanded.add(node.path);
         render();
       });
       row.addEventListener("contextmenu", (event) => {
@@ -3779,7 +3917,6 @@ class VocabCapturePlugin extends Plugin {
       row.addEventListener("dragover", (event) => {
         if (!state.drag) return;
         event.preventDefault();
-        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
         row.classList.add("is-drop-target");
       });
       row.addEventListener("dragleave", () => row.classList.remove("is-drop-target"));
@@ -3790,13 +3927,14 @@ class VocabCapturePlugin extends Plugin {
         const drag = state.drag;
         state.drag = null;
         if (!drag) return;
-        let result;
+        let result = null;
         if (drag.type === "folder" && node.type === "folder") {
           result = await this.moveUnknownFolder(drag.path, node.path);
         } else if (drag.type === "file" && node.type === "folder") {
           result = await this.moveUnknownMarkdown(drag.path, node.path);
         } else if (drag.type === "card" && node.type === "file") {
           result = await this.moveUnknownCardToParent(drag.filePath, drag.title, node.path, null);
+          if (result.changed) rememberRecent(node.path);
         } else if (drag.type === "card" && node.type === "folder") {
           const fileNode = (node.children || []).find((child) => child.type === "file");
           if (!fileNode) {
@@ -3804,6 +3942,7 @@ class VocabCapturePlugin extends Plugin {
             return;
           }
           result = await this.moveUnknownCardToParent(drag.filePath, drag.title, fileNode.path, null);
+          if (result.changed) rememberRecent(fileNode.path);
         } else {
           new Notice("不能放到这个位置");
           return;
@@ -3811,169 +3950,200 @@ class VocabCapturePlugin extends Plugin {
         if (result && !result.changed) new Notice(result.notice || "移动失败");
         await refresh();
       });
+
       tree.appendChild(row);
       if (node.type === "folder" && (state.expanded.has(node.path) || query)) {
         for (const child of node.children || []) addNode(child, depth + 1);
       }
+      if (node.type === "file" && (state.expanded.has(node.path) || query)) {
+        const file = findFile(node.path);
+        for (const heading of file ? file.headings : []) {
+          if (heading.level === 1) renderHeading(heading, node.path, depth + 1);
+        }
+      }
     };
+
     addNode(workspace.tree, 0);
     left.appendChild(tree);
     left.appendChild(
       el(
         "div",
         "vocab-capture-folder-ui__tree-note",
-        "文件夹不会自动生成 Markdown；右键文件夹或 Markdown 可管理。",
+        "选中节点自动展开直接子级；双击折叠该分支；分类多时可使用“折叠全部”。",
       ),
     );
     body.appendChild(left);
 
     const right = el("section", "vocab-capture-folder-ui__right");
-    const breadcrumb = el("div", "vocab-capture-folder-ui__breadcrumb");
-    const parts = selectedFile ? selectedFile.path.split("/") : [];
-    parts.forEach((part, index) => {
-      const span = el("span", "", part);
-      if (index === parts.length - 1) {
-        span.className = "vocab-capture-folder-ui__crumb-current";
-      }
-      breadcrumb.appendChild(span);
-      if (index < parts.length - 1) breadcrumb.appendChild(el("span", "vocab-capture-folder-ui__sep", "/"));
-    });
-    right.appendChild(breadcrumb);
+    if (!selectedFile) {
+      const path = state.folder || workspace.root;
+      right.appendChild(el("div", "vocab-capture-folder-ui__breadcrumb", path));
+      const emptyHead = el("div", "vocab-capture-folder-ui__right-head");
+      emptyHead.appendChild(el("span", "vocab-capture-folder-ui__right-title", "请选择 Markdown"));
+      right.appendChild(emptyHead);
+      right.appendChild(
+        el(
+          "div",
+          "vocab-capture-folder-ui__empty",
+          "从左侧选择 Markdown 后，右侧显示它的 H1–H6 卡片。",
+        ),
+      );
+    } else {
+      const breadcrumb = el("div", "vocab-capture-folder-ui__breadcrumb");
+      const parts = selectedFile.path.split("/");
+      parts.forEach((part, index) => {
+        const span = el("span", "", part);
+        if (index === parts.length - 1) span.className = "vocab-capture-folder-ui__crumb-current";
+        breadcrumb.appendChild(span);
+        if (index < parts.length - 1) breadcrumb.appendChild(el("span", "vocab-capture-folder-ui__sep", "/"));
+      });
+      right.appendChild(breadcrumb);
 
-    const rightHead = el("div", "vocab-capture-folder-ui__right-head");
-    rightHead.appendChild(el("span", "vocab-capture-folder-ui__right-title", selectedFile ? selectedFile.name : "未选择 Markdown"));
-    rightHead.appendChild(el("span", "vocab-capture-folder-ui__right-count", `${selectedHeadings.length} 个卡片`));
-    const actions = el("div", "vocab-capture-folder-ui__right-actions");
-    actions.appendChild(
-      button(
-        "移动卡片",
-        "vocab-capture-folder-ui__primary",
-        () => {
-          if (!selectedFile || !state.selectedHeading) {
+      const rightHead = el("div", "vocab-capture-folder-ui__right-head");
+      rightHead.appendChild(el("span", "vocab-capture-folder-ui__right-title", selectedFile.name));
+      rightHead.appendChild(el("span", "vocab-capture-folder-ui__right-count", `${selectedHeadings.length} 个卡片`));
+      const actions = el("div", "vocab-capture-folder-ui__right-actions");
+      actions.appendChild(
+        button("移动到…", "vocab-capture-folder-ui__primary", () => {
+          if (!state.selectedHeading) {
             new Notice("请先选择卡片");
             return;
           }
           const heading = selectedHeadings.find((item) => item.title === state.selectedHeading);
           if (!heading) return;
           this.openUnknownMoveUi(panel, workspace, state, selectedFile, heading, refresh);
-        },
-      ),
-    );
-    actions.appendChild(
-      button("新建 Markdown", "vocab-capture-folder-ui__secondary", () => {
-        const folder = selectedFile
-          ? selectedFile.path.split("/").slice(0, -1).join("/")
-          : state.folder;
-        this.promptUnknownUi(panel, "新建 Markdown", "文件名", "新文件.md", async (value) => {
-          const result = await this.addUnknownMarkdown(folder, value);
-          if (!result.changed) new Notice(result.notice || "新建 Markdown 失败");
-          else state.selectedFile = result.path;
-          await refresh();
-        });
-      }),
-    );
-    rightHead.appendChild(actions);
-    right.appendChild(rightHead);
-    right.appendChild(
-      el(
-        "div",
-        "vocab-capture-folder-ui__hint",
-        "选中卡片后点击“移动卡片”；标题层级由目标父级自动决定。",
-      ),
-    );
-
-    const headingList = el("div", "vocab-capture-folder-ui__headings");
-    const visibleHeadings = selectedHeadings.filter(
-      (heading) => !query || heading.title.toLocaleLowerCase().includes(query),
-    );
-    if (!visibleHeadings.length) {
-      headingList.appendChild(
+        }),
+      );
+      rightHead.appendChild(actions);
+      right.appendChild(rightHead);
+      right.appendChild(
         el(
           "div",
-          "vocab-capture-folder-ui__empty",
-          selectedHeadings.length ? "没有匹配的卡片。" : "该 Markdown 暂无卡片。",
+          "vocab-capture-folder-ui__hint",
+          "拖动卡片到左侧 Markdown 或标题；也可以点击下方快速目标。",
+        ),
+      );
+
+      if (state.recentTargets && state.recentTargets.length) {
+        const quick = el("div", "vocab-capture-folder-ui__quick");
+        quick.appendChild(el("div", "vocab-capture-folder-ui__quick-title", "快速移动最近目标"));
+        const chips = el("div", "vocab-capture-folder-ui__chips");
+        for (const target of state.recentTargets.slice(0, 4)) {
+          chips.appendChild(
+            button(target, "vocab-capture-folder-ui__chip", async () => {
+              if (!state.selectedHeading) {
+                new Notice("请先选择卡片");
+                return;
+              }
+              const file = workspace.fileMap.get(target);
+              if (!file) return;
+              const result = await this.moveUnknownCardToParent(
+                selectedFile.path,
+                state.selectedHeading,
+                target,
+                null,
+              );
+              if (!result.changed) new Notice(result.notice || "移动失败");
+              else rememberRecent(target);
+              await refresh();
+            }),
+          );
+        }
+        quick.appendChild(chips);
+        right.appendChild(quick);
+      }
+
+      const headingList = el("div", "vocab-capture-folder-ui__headings");
+      const visibleHeadings = selectedHeadings.filter((heading) => matchesHeading(heading));
+      if (!visibleHeadings.length) {
+        headingList.appendChild(
+          el(
+            "div",
+            "vocab-capture-folder-ui__empty",
+            selectedHeadings.length ? "没有匹配的卡片。" : "该 Markdown 暂无卡片。",
+          ),
+        );
+      }
+      for (const heading of visibleHeadings) {
+        const row = el(
+          "div",
+          "vocab-capture-folder-ui__heading" +
+            (heading.title === state.selectedHeading ? " is-selected" : ""),
+        );
+        row.style.marginLeft = `${(heading.level - 1) * 18}px`;
+        row.appendChild(
+          el("span", `vocab-capture-folder-ui__level is-h${heading.level}`, `H${heading.level}`),
+        );
+        const main = el("div", "vocab-capture-folder-ui__heading-main");
+        main.appendChild(el("span", "vocab-capture-folder-ui__heading-title", heading.title));
+        row.appendChild(main);
+        row.addEventListener("click", () => {
+          state.selectedHeading = heading.title;
+          state.folder = selectedFile.path.split("/").slice(0, -1).join("/");
+          state.folderSelected = false;
+          expandHeadingPath(selectedFile, heading);
+          render();
+        });
+        row.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          state.selectedHeading = heading.title;
+          this.showUnknownCardContext(panel, event, workspace, state, selectedFile, heading, refresh);
+        });
+
+        row.draggable = true;
+        row.addEventListener("dragstart", (event) => {
+          state.drag = { type: "card", filePath: selectedFile.path, title: heading.title };
+          if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", JSON.stringify(state.drag));
+          }
+          row.classList.add("is-dragging");
+        });
+        row.addEventListener("dragend", () => {
+          state.drag = null;
+          row.classList.remove("is-dragging");
+          headingList.querySelectorAll(".is-drop-target").forEach((item) => item.classList.remove("is-drop-target"));
+        });
+        row.addEventListener("dragover", (event) => {
+          if (!state.drag || state.drag.type !== "card") return;
+          event.preventDefault();
+          row.classList.add("is-drop-target");
+        });
+        row.addEventListener("dragleave", () => row.classList.remove("is-drop-target"));
+        row.addEventListener("drop", async (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          row.classList.remove("is-drop-target");
+          const drag = state.drag;
+          state.drag = null;
+          if (!drag || drag.type !== "card") return;
+          const result = await this.moveUnknownCardToParent(
+            drag.filePath,
+            drag.title,
+            selectedFile.path,
+            heading.title,
+          );
+          if (!result.changed) new Notice(result.notice || "移动失败");
+          else rememberRecent(selectedFile.path);
+          await refresh();
+        });
+        headingList.appendChild(row);
+      }
+      right.appendChild(headingList);
+      right.appendChild(
+        el(
+          "div",
+          "vocab-capture-folder-ui__right-foot",
+          "卡片只能移动，不能在这里新建；F2 初次收录写入未分类.md 的 H1。",
         ),
       );
     }
-    for (const heading of visibleHeadings) {
-      const row = el(
-        "div",
-        "vocab-capture-folder-ui__heading" +
-          (heading.title === state.selectedHeading ? " is-selected" : ""),
-      );
-      row.style.marginLeft = `${(heading.level - 1) * 18}px`;
-      row.appendChild(
-        el("span", `vocab-capture-folder-ui__level is-h${heading.level}`, `H${heading.level}`),
-      );
-      const main = el("div", "vocab-capture-folder-ui__heading-main");
-      main.appendChild(el("span", "vocab-capture-folder-ui__heading-title", heading.title));
-      row.appendChild(main);
-      row.addEventListener("click", () => {
-        state.selectedHeading = heading.title;
-        render();
-      });
-      row.addEventListener("contextmenu", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        state.selectedHeading = heading.title;
-        this.showUnknownCardContext(panel, event, workspace, state, selectedFile, heading, refresh);
-      });
-
-      row.draggable = true;
-      row.addEventListener("dragstart", (event) => {
-        if (!selectedFile) return;
-        state.drag = { type: "card", filePath: selectedFile.path, title: heading.title };
-        if (event.dataTransfer) {
-          event.dataTransfer.effectAllowed = "move";
-          event.dataTransfer.setData("text/plain", JSON.stringify(state.drag));
-        }
-        row.classList.add("is-dragging");
-      });
-      row.addEventListener("dragend", () => {
-        state.drag = null;
-        row.classList.remove("is-dragging");
-        headingList.querySelectorAll(".is-drop-target").forEach((item) => item.classList.remove("is-drop-target"));
-      });
-      row.addEventListener("dragover", (event) => {
-        if (!state.drag || state.drag.type !== "card") return;
-        event.preventDefault();
-        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-        row.classList.add("is-drop-target");
-      });
-      row.addEventListener("dragleave", () => row.classList.remove("is-drop-target"));
-      row.addEventListener("drop", async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        row.classList.remove("is-drop-target");
-        const drag = state.drag;
-        state.drag = null;
-        if (!drag || drag.type !== "card" || !selectedFile) return;
-        const result = await this.moveUnknownCardToParent(
-          drag.filePath,
-          drag.title,
-          selectedFile.path,
-          heading.title,
-        );
-        if (!result.changed) new Notice(result.notice || "移动失败");
-        await refresh();
-      });
-      headingList.appendChild(row);
-    }
-    right.appendChild(headingList);
-    right.appendChild(
-      el(
-        "div",
-        "vocab-capture-folder-ui__right-foot",
-        "卡片只能移动，不能在这里新建；F2 初次收录写入未分类.md 的 H1。",
-      ),
-    );
     body.appendChild(right);
     manager.appendChild(body);
 
     const foot = el("div", "vocab-capture-folder-ui__foot");
-    foot.appendChild(
-      el("span", "", "删除文件夹时整个分支移动到未分类，不删除 Markdown 或卡片内容。"),
-    );
+    foot.appendChild(el("span", "", "删除文件夹时内容移动到未分类；未分类中的内容直接删除。"));
     foot.appendChild(el("span", "vocab-capture-folder-ui__foot-right", `${totalCards} 条`));
     manager.appendChild(foot);
     panel.appendChild(manager);
@@ -4171,7 +4341,7 @@ class VocabCapturePlugin extends Plugin {
     modal.appendChild(
       Object.assign(document.createElement("div"), {
         className: "vocab-capture-folder-ui__modal-title",
-        textContent: "移动卡片",
+        textContent: "移动到…",
       }),
     );
     modal.appendChild(
@@ -4184,6 +4354,35 @@ class VocabCapturePlugin extends Plugin {
     source.className = "vocab-capture-folder-ui__path";
     source.textContent = `${sourceFile.path} · ${sourceHeading.title}（H${sourceHeading.level}）`;
     modal.appendChild(source);
+
+    if (state.recentTargets && state.recentTargets.length) {
+      const recent = document.createElement("div");
+      recent.className = "vocab-capture-folder-ui__quick";
+      recent.appendChild(
+        Object.assign(document.createElement("div"), {
+          className: "vocab-capture-folder-ui__quick-title",
+          textContent: "最近目标",
+        }),
+      );
+      const chips = document.createElement("div");
+      chips.className = "vocab-capture-folder-ui__chips";
+      for (const target of state.recentTargets.slice(0, 4)) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "vocab-capture-folder-ui__chip";
+        chip.textContent = target;
+        chip.addEventListener("click", () => {
+          const option = Array.from(fileSelect.options).find((item) => item.value === target);
+          if (option) {
+            fileSelect.value = target;
+            paintParents();
+          }
+        });
+        chips.appendChild(chip);
+      }
+      recent.appendChild(chips);
+      modal.appendChild(recent);
+    }
 
     const search = document.createElement("input");
     search.type = "search";
@@ -4289,6 +4488,10 @@ class VocabCapturePlugin extends Plugin {
         new Notice(result.notice || "移动失败");
         return;
       }
+      state.recentTargets = [
+        targetFile,
+        ...(state.recentTargets || []).filter((item) => item !== targetFile),
+      ].slice(0, 5);
       layer.remove();
       state.selectedFile = targetFile;
       state.selectedHeading = sourceHeading.title;

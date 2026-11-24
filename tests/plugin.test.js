@@ -479,7 +479,7 @@ test("插件: 不理解词笔记前方渲染管理 UI", async () => {
   plugin.unknownUiRefreshToken = 0;
   plugin.unknownUiState = {
     managerOpen: true,
-    expanded: new Set(["不理解的词"]),
+    expanded: new Set(["不理解的词", "不理解的词/未分类", path]),
     selectedFile: path,
     selectedHeading: "Vite",
     folder: "不理解的词",
@@ -494,6 +494,8 @@ test("插件: 不理解词笔记前方渲染管理 UI", async () => {
   assert.ok(panel.querySelector(".vocab-capture-folder-ui__manager"));
   assert.ok(panel.textContent.includes("文件夹与卡片"));
   assert.ok(panel.textContent.includes("Vite"));
+  assert.ok(panel.querySelectorAll(".vocab-capture-folder-ui__heading-row").length >= 1);
+  assert.equal(panel.querySelectorAll(".vocab-capture-folder-ui__toggle").length, 0);
 });
 
 test("插件: 旧设置加载后补齐不理解词默认值", async () => {

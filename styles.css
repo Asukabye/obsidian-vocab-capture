@@ -709,3 +709,12 @@
 .vocab-capture-folder-ui__heading.is-dragging { opacity: .45; }
 .vocab-capture-folder-ui__row.is-drop-target,
 .vocab-capture-folder-ui__heading.is-drop-target { outline: 1px dashed var(--interactive-accent); outline-offset: -2px; }
+
+.vocab-capture-folder-ui__fold-all { border: 0; background: transparent; color: var(--interactive-accent); font: inherit; font-size: 9px; cursor: pointer; padding: 2px; }
+.vocab-capture-folder-ui__fold-all:hover { color: var(--text-accent); }
+.vocab-capture-folder-ui__quick { margin: 8px 0 0; padding: 7px 8px; border: 1px solid var(--background-modifier-border); border-radius: 5px; background: var(--background-secondary); }
+.vocab-capture-folder-ui__quick-title { margin-bottom: 5px; color: var(--text-faint); font-size: 8px; }
+.vocab-capture-folder-ui__chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.vocab-capture-folder-ui__chip { border: 1px solid var(--background-modifier-border); border-radius: 4px; background: var(--background-primary); color: var(--text-muted); padding: 3px 6px; font: inherit; font-size: 9px; cursor: pointer; }
+.vocab-capture-folder-ui__chip:hover { border-color: var(--interactive-accent); color: var(--text-accent); }
+.vocab-capture-folder-ui__heading-row { cursor: grab; }
