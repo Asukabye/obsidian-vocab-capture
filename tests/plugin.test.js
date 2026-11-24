@@ -591,3 +591,48 @@ test("插件: 未分类中的卡片可直接删除", async () => {
     "# parent\n\n# other\n",
   );
 });
+
+
+test("插件: 同名卡片优先使用非未分类文件", async () => {
+  const fake = makeFakeVault(
+    new Map([
+      ["不理解的词/未分类/未分类.md", "# word\n"],
+      ["不理解的词/python/库.md", "# 标准库\n\n## word\n"],
+    ]),
+    new Set(["不理解的词", "不理解的词/未分类", "不理解的词/python"]),
+  );
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    unknownRootFolder: "不理解的词",
+    unknownNotePath: "不理解的词/未分类/未分类.md",
+  };
+  plugin.app = { vault: fake.vault };
+  const card = await plugin.getUnknownCard("word");
+  assert.equal(card.filePath, "不理解的词/python/库.md");
+  assert.equal(card.level, 2);
+});
+
+test("插件: 跨文件移动卡片会移除源卡片", async () => {
+  const fake = makeFakeVault(
+    new Map([
+      ["不理解的词/未分类/未分类.md", "# word\n\n# other\n"],
+      ["不理解的词/python/库.md", "# 标准库\n"],
+    ]),
+    new Set(["不理解的词", "不理解的词/未分类", "不理解的词/python"]),
+  );
+  const plugin = Object.create(PluginClass.prototype);
+  plugin.settings = {
+    unknownRootFolder: "不理解的词",
+    unknownNotePath: "不理解的词/未分类/未分类.md",
+  };
+  plugin.app = { vault: fake.vault };
+  const result = await plugin.moveUnknownCardToParent(
+    "不理解的词/未分类/未分类.md",
+    "word",
+    "不理解的词/python/库.md",
+    "标准库",
+  );
+  assert.equal(result.changed, true);
+  assert.equal(fake.files.get("不理解的词/未分类/未分类.md"), "\n# other\n");
+  assert.ok(fake.files.get("不理解的词/python/库.md").includes("## word"));
+});

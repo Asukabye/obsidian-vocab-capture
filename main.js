@@ -2217,9 +2217,9 @@ class VocabCapturePlugin extends Plugin {
           line: heading.start,
           filePath: file.path,
         };
-        const key = normalizeUnknownSelection(heading.title);
+        const key = normalizeUnknownKey(heading.title);
         const current = index.get(key);
-        if (!current || (file.path === dashboard && current.filePath !== dashboard)) {
+        if (!current || (current.filePath === dashboard && file.path !== dashboard)) {
           index.set(key, item);
         }
       }
@@ -2234,7 +2234,7 @@ class VocabCapturePlugin extends Plugin {
   async getUnknownCard(entry) {
     const workspace = await this.getUnknownWorkspaceData();
     const index = this.getUnknownCardIndex(workspace);
-    return index.get(normalizeUnknownSelection(entry)) || null;
+    return index.get(normalizeUnknownKey(entry)) || null;
   }
 
   async addUnknownFolder(parentPath, name) {
@@ -2481,6 +2481,11 @@ class VocabCapturePlugin extends Plugin {
       } else {
         await this.writeTextFile(sourceFile, nextSource);
         await this.writeTextFile(targetFile, inserted);
+        const sourceAfter = await this.readTextFile(sourceFile);
+        if (findHeadingSection(sourceAfter, title)) {
+          const cleaned = removeHeadingSection(sourceAfter, title);
+          if (cleaned != null) await this.writeTextFile(sourceFile, cleaned);
+        }
       }
       this.invalidateUnknownCardIndex();
       return { changed: true };
@@ -2901,7 +2906,8 @@ class VocabCapturePlugin extends Plugin {
     let changed = false;
 
     for (const entry of list) {
-      if (index.has(entry)) continue;
+      const entryKey = normalizeUnknownKey(entry);
+      if (index.has(entryKey)) continue;
       const heading = `# ${entry}`;
       const lines = text.split(/\r?\n/);
       while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
@@ -2909,7 +2915,7 @@ class VocabCapturePlugin extends Plugin {
       lines.push(heading);
       lines.push("");
       text = lines.join("\n");
-      index.set(entry, { title: entry, level: 1, line: lines.length - 2, filePath: dashboard });
+      index.set(entryKey, { title: entry, level: 1, line: lines.length - 2, filePath: dashboard });
       changed = true;
     }
 
@@ -2933,14 +2939,10 @@ class VocabCapturePlugin extends Plugin {
       let card = await this.getUnknownCard(normalized);
       if (!card) {
         await this.ensureUnknownWorkspace();
-        await this.ensureUnknownHeadings(
-          new Set([...(this.unknownStore.entries || []), normalized]),
-          false,
-        );
         card = await this.getUnknownCard(normalized);
       }
       if (!card) {
-        new Notice("未找到对应的不理解的词卡片");
+        new Notice("未找到不理解词卡片，请检查该词是否已被移动或删除");
         return;
       }
       await this.app.workspace.openLinkText(card.filePath, "", false);
