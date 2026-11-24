@@ -1645,6 +1645,8 @@ class VocabCapturePlugin extends Plugin {
     await this.loadSettings();
 
     this.observers = new Map();
+    this.tableObservers = new Map();
+    this.tableRefreshTimer = null;
     this.refreshTimer = null;
     this.recording = false;
     this.recordingCleanup = null;
@@ -1975,12 +1977,22 @@ class VocabCapturePlugin extends Plugin {
       window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
     }
+    if (this.tableRefreshTimer) {
+      window.clearTimeout(this.tableRefreshTimer);
+      this.tableRefreshTimer = null;
+    }
 
     if (this.observers) {
       for (const observer of this.observers.values()) {
         observer.disconnect();
       }
       this.observers.clear();
+    }
+    if (this.tableObservers) {
+      for (const observer of this.tableObservers.values()) {
+        observer.disconnect();
+      }
+      this.tableObservers.clear();
     }
 
     if (typeof this.recordingCleanup === "function") {
@@ -3021,7 +3033,14 @@ class VocabCapturePlugin extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
       if (!(view instanceof MarkdownView)) continue;
-      if (!view.file || view.file.path !== workspace.dashboard) continue;
+      if (!view.file || view.file.path !== workspace.dashboard) {
+        for (const stale of view.containerEl.querySelectorAll(
+          ".vocab-capture-note-ui",
+        )) {
+          stale.remove();
+        }
+        continue;
+      }
 
       const preview = getPreviewElement(view);
       const host = preview
@@ -5034,6 +5053,76 @@ class VocabCapturePlugin extends Plugin {
         this.observers.delete(element);
       }
     }
+
+    if (!this.tableObservers) this.tableObservers = new Map();
+    const seenEditors = new Set();
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView)) continue;
+      const editor = view.containerEl.querySelector(".cm-content");
+      if (!editor || editor.ownerDocument !== document) continue;
+      seenEditors.add(editor);
+      if (!this.tableObservers.has(editor)) {
+        const observer = new MutationObserver(() => {
+          if (this.tableRefreshTimer) window.clearTimeout(this.tableRefreshTimer);
+          this.tableRefreshTimer = window.setTimeout(() => {
+            this.tableRefreshTimer = null;
+            try {
+              this.refreshHighlights();
+            } catch (error) {
+              // Table DOM may be mid-render.
+            }
+          }, 60);
+        });
+        observer.observe(editor, { childList: true, subtree: true });
+        this.tableObservers.set(editor, observer);
+      }
+    }
+    for (const [element, observer] of this.tableObservers) {
+      if (!seenEditors.has(element)) {
+        observer.disconnect();
+        this.tableObservers.delete(element);
+      }
+    }
+  }
+
+  collectEditorTableRanges(regex) {
+    const ranges = [];
+    if (!regex) return ranges;
+    const options = {
+      includeCode: this.settings.includeCode,
+      includeTables: this.settings.includeTables,
+      skipExistingHighlights: this.settings.skipExistingHighlights,
+    };
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView)) continue;
+      if (
+        !view.file ||
+        this.isWordFile(view.file) ||
+        this.isUnknownFile(view.file)
+      ) {
+        continue;
+      }
+      let roots = Array.from(
+        view.containerEl.querySelectorAll(".cm-table-widget"),
+      );
+      if (!roots.length) {
+        roots = Array.from(
+          view.containerEl.querySelectorAll(".cm-table-cell"),
+        );
+      }
+      if (!roots.length) {
+        roots = Array.from(
+          view.containerEl.querySelectorAll(".cm-content table"),
+        );
+      }
+      for (const root of roots) {
+        if (root.ownerDocument !== document) continue;
+        ranges.push(...collectRanges(root, regex, options));
+      }
+    }
+    return ranges;
   }
 
   refreshHighlights() {
@@ -5093,6 +5182,10 @@ class VocabCapturePlugin extends Plugin {
           if (entry) unknownLinkRanges.push({ range, entry });
         }
       }
+    }
+
+    if (unknownRegex) {
+      unknownRanges.push(...this.collectEditorTableRanges(unknownRegex));
     }
 
     this.clearUnknownHover();
