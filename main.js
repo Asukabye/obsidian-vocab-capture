@@ -4044,7 +4044,10 @@ class VocabCapturePlugin extends Plugin {
                 null,
               );
               if (!result.changed) new Notice(result.notice || "移动失败");
-              else rememberRecent(target);
+              else {
+                rememberRecent(target);
+                expandPath(target);
+              }
               await refresh();
             }),
           );
@@ -4493,8 +4496,16 @@ class VocabCapturePlugin extends Plugin {
         ...(state.recentTargets || []).filter((item) => item !== targetFile),
       ].slice(0, 5);
       layer.remove();
+      state.folder = targetFile.split("/").slice(0, -1).join("/");
+      state.folderSelected = false;
       state.selectedFile = targetFile;
       state.selectedHeading = sourceHeading.title;
+      const parts = targetFile.split("/");
+      let current = "";
+      for (const part of parts) {
+        current = current ? current + "/" + part : part;
+        state.expanded.add(current);
+      }
       await refresh();
     });
     window.setTimeout(() => search.focus(), 0);
