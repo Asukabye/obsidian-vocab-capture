@@ -3772,19 +3772,26 @@ class VocabCapturePlugin extends Plugin {
       row.appendChild(el("span", "vocab-capture-folder-ui__name", heading.title));
       row.addEventListener("click", (event) => {
         event.stopPropagation();
+        if (row._unknownClickTimer) window.clearTimeout(row._unknownClickTimer);
+        row._unknownClickTimer = window.setTimeout(() => {
+          row._unknownClickTimer = null;
+          if (state.expanded.has(key)) state.expanded.delete(key);
+          else state.expanded.add(key);
+          render();
+        }, 250);
+      });
+      row.addEventListener("dblclick", (event) => {
+        event.stopPropagation();
+        if (row._unknownClickTimer) {
+          window.clearTimeout(row._unknownClickTimer);
+          row._unknownClickTimer = null;
+        }
         const file = findFile(filePath);
         if (!file) return;
         state.folder = filePath.split("/").slice(0, -1).join("/");
         state.folderSelected = false;
         state.selectedFile = filePath;
         state.selectedHeading = heading.title;
-        expandHeadingPath(file, heading);
-        render();
-      });
-      row.addEventListener("dblclick", (event) => {
-        event.stopPropagation();
-        if (state.expanded.has(key)) state.expanded.delete(key);
-        else state.expanded.add(key);
         render();
       });
       row.addEventListener("contextmenu", (event) => {
@@ -3800,6 +3807,10 @@ class VocabCapturePlugin extends Plugin {
 
       row.draggable = true;
       row.addEventListener("dragstart", (event) => {
+        if (row._unknownClickTimer) {
+          window.clearTimeout(row._unknownClickTimer);
+          row._unknownClickTimer = null;
+        }
         state.drag = { type: "card", filePath, title: heading.title };
         if (event.dataTransfer) {
           event.dataTransfer.effectAllowed = "move";
@@ -3869,25 +3880,33 @@ class VocabCapturePlugin extends Plugin {
       row.appendChild(el("span", "vocab-capture-folder-ui__count", String(node.count || 0)));
       row.addEventListener("click", (event) => {
         event.stopPropagation();
+        if (node.path === workspace.root) return;
+        if (row._unknownClickTimer) window.clearTimeout(row._unknownClickTimer);
+        row._unknownClickTimer = window.setTimeout(() => {
+          row._unknownClickTimer = null;
+          if (state.expanded.has(node.path)) state.expanded.delete(node.path);
+          else state.expanded.add(node.path);
+          render();
+        }, 250);
+      });
+      row.addEventListener("dblclick", (event) => {
+        event.stopPropagation();
+        if (row._unknownClickTimer) {
+          window.clearTimeout(row._unknownClickTimer);
+          row._unknownClickTimer = null;
+        }
+        if (node.path === workspace.root) return;
         if (node.type === "folder") {
           state.folder = node.path;
           state.folderSelected = true;
           state.selectedFile = null;
           state.selectedHeading = null;
-          state.expanded.add(node.path);
         } else {
           state.folder = node.path.split("/").slice(0, -1).join("/");
           state.folderSelected = false;
           state.selectedFile = node.path;
           state.selectedHeading = null;
-          state.expanded.add(node.path);
         }
-        render();
-      });
-      row.addEventListener("dblclick", (event) => {
-        event.stopPropagation();
-        if (state.expanded.has(node.path)) state.expanded.delete(node.path);
-        else state.expanded.add(node.path);
         render();
       });
       row.addEventListener("contextmenu", (event) => {
@@ -3902,6 +3921,10 @@ class VocabCapturePlugin extends Plugin {
 
       row.draggable = true;
       row.addEventListener("dragstart", (event) => {
+        if (row._unknownClickTimer) {
+          window.clearTimeout(row._unknownClickTimer);
+          row._unknownClickTimer = null;
+        }
         state.drag = { type: node.type, path: node.path };
         if (event.dataTransfer) {
           event.dataTransfer.effectAllowed = "move";
@@ -3969,7 +3992,7 @@ class VocabCapturePlugin extends Plugin {
       el(
         "div",
         "vocab-capture-folder-ui__tree-note",
-        "选中节点自动展开直接子级；双击折叠该分支；分类多时可使用“折叠全部”。",
+        "单击条目仅展开/折叠；双击条目在右侧显示。分类多时可使用“折叠全部”。",
       ),
     );
     body.appendChild(left);
@@ -3985,7 +4008,7 @@ class VocabCapturePlugin extends Plugin {
         el(
           "div",
           "vocab-capture-folder-ui__empty",
-          "从左侧选择 Markdown 后，右侧显示它的 H1–H6 卡片。",
+          "双击左侧 Markdown 后，右侧显示它的 H1–H6 卡片。",
         ),
       );
     } else {
@@ -4020,7 +4043,7 @@ class VocabCapturePlugin extends Plugin {
         el(
           "div",
           "vocab-capture-folder-ui__hint",
-          "拖动卡片到左侧 Markdown 或标题；也可以点击下方快速目标。",
+          "双击左侧 Markdown 或标题显示右侧内容；拖动卡片可移动。",
         ),
       );
 
