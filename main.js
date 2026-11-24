@@ -2242,6 +2242,7 @@ class VocabCapturePlugin extends Plugin {
     const safe = normalizeSafeFolderName(name);
     if (!root || !safe) return { changed: false, notice: "文件夹名无效" };
     const parent = normalizeVaultPath(parentPath || root);
+    await this.ensureUnknownFolder(parent);
     let target = parent + "/" + safe;
     let suffix = 2;
     while (await this.app.vault.adapter.exists(target)) {
@@ -3001,6 +3002,7 @@ class VocabCapturePlugin extends Plugin {
     this.unknownUiState = state;
 
     const signature = JSON.stringify({
+      tree: workspace.tree,
       files: workspace.files.map((file) => ({
         path: file.path,
         headings: file.headings.map((heading) => ({ title: heading.title, level: heading.level })),
@@ -3649,31 +3651,6 @@ class VocabCapturePlugin extends Plugin {
     compact.appendChild(compactLeft);
     const compactActions = el("div", "vocab-capture-folder-ui__compact-actions");
     compactActions.appendChild(
-      button("新建文件夹", "vocab-capture-folder-ui__quiet", () => {
-        this.promptUnknownUi(panel, "新建文件夹", "文件夹名", "", async (value) => {
-          const parent = this.getUnknownSelectedFolder(workspace, state);
-          const result = await this.addUnknownFolder(parent, value);
-          if (!result.changed) new Notice(result.notice || "新建文件夹失败");
-          state.expanded.add(parent);
-          await refresh();
-        });
-      }),
-    );
-    compactActions.appendChild(
-      button("新建 Markdown", "vocab-capture-folder-ui__quiet", () => {
-        this.promptUnknownUi(panel, "新建 Markdown", "文件名", "新文件.md", async (value) => {
-          const folder = this.getUnknownSelectedFolder(workspace, state);
-          const result = await this.addUnknownMarkdown(folder, value);
-          if (!result.changed) new Notice(result.notice || "新建 Markdown 失败");
-          else {
-            state.selectedFile = result.path;
-            state.folder = folder;
-          }
-          await refresh();
-        });
-      }),
-    );
-    compactActions.appendChild(
       button(state.managerOpen ? "收起" : "管理", "vocab-capture-folder-ui__primary", () => {
         state.managerOpen = !state.managerOpen;
         if (state.managerOpen) {
@@ -3700,12 +3677,6 @@ class VocabCapturePlugin extends Plugin {
     search.placeholder = "搜索文件夹、Markdown、标题";
     search.value = state.search;
     head.appendChild(search);
-    head.appendChild(
-      button("关闭", "vocab-capture-folder-ui__close", () => {
-        state.managerOpen = false;
-        render();
-      }),
-    );
     manager.appendChild(head);
 
     const body = el("div", "vocab-capture-folder-ui__body");
@@ -4002,7 +3973,7 @@ class VocabCapturePlugin extends Plugin {
       el(
         "div",
         "vocab-capture-folder-ui__tree-note",
-        "单击条目仅展开/折叠；双击条目在右侧显示。分类多时可使用“折叠全部”。",
+        "单击条目仅展开/折叠；双击条目在右侧显示。右键文件夹可新建子文件夹与 Markdown。",
       ),
     );
     body.appendChild(left);
